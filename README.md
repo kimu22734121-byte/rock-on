@@ -45,23 +45,30 @@
 
 ## セットアップ（Windows）
 
-1. [Python 3.10 以上](https://www.python.org/downloads/) をインストール（「Add python.exe to PATH」にチェック）
-2. このフォルダでコマンドプロンプトを開き、次を実行:
+1. [Python](https://www.python.org/downloads/) をインストール（3.12 以上。インストール画面で **「Add python.exe to PATH」にチェック**）
+2. このフォルダの **`start.bat` をダブルクリック**
+   - 初回は必要なライブラリを自動でインストールします（数分）
+   - Claude API キー（https://console.anthropic.com で取得）を聞かれるので貼り付けて Enter。`config.env` に保存され、次回からは聞かれません
+3. 「まとめサーバーを起動します」と表示されたら準備完了。PC のブラウザで http://localhost:8000 を開けます
 
-```bat
-python -m venv .venv
-.venv\Scripts\activate
+| ファイル | 役割 |
+|---|---|
+| `start.bat` | サーバーを起動（初回セットアップ込み。止まっても 10 秒後に自動で再起動） |
+| `setup_autostart.bat` | PC にサインインしたとき自動で起動するように登録 |
+| `remove_autostart.bat` | 自動起動の登録を解除 |
+| `config.env` | API キーなどの設定（`config.env.example` を参照） |
+
+**つけっぱなしの PC で使う場合**：`start.bat` で一度起動できたことを確認してから `setup_autostart.bat` を実行してください。
+自動起動はサインイン後に動くので、PC が再起動したときにサインイン画面で止まらないよう、Windows の自動サインインを設定しておくと安心です。
+
+Mac / Linux では次のように起動します。
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-set ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...
 uvicorn app.main:app --port 8000
 ```
-
-3. PC のブラウザで http://localhost:8000 を開けば、PC 用の画面が使えます。
-
-Claude API キーは https://console.anthropic.com で取得します。
-毎回 `set` するのが面倒なら、Windows の「環境変数」に `ANTHROPIC_API_KEY` を登録してください。
-
-Mac / Linux では `.venv\Scripts\activate` を `source .venv/bin/activate` に、`set` を `export` に置き換えます。
 
 ## スマホから使う（HTTPS 化）
 
@@ -70,7 +77,7 @@ Mac / Linux では `.venv\Scripts\activate` を `source .venv/bin/activate` に�
 
 1. PC とスマホの両方に [Tailscale](https://tailscale.com/download) を入れて、同じアカウントでログイン
 2. Tailscale の管理画面（https://login.tailscale.com/admin/dns）で **MagicDNS** と **HTTPS Certificates** を有効にする
-3. PC でまとめサーバーを起動したまま、別のコマンドプロンプトで:
+3. `start.bat` でまとめサーバーを起動したまま、別のコマンドプロンプトで:
 
 ```bat
 tailscale serve --bg 8000

@@ -1,6 +1,6 @@
 anthropic>=2.11.0
 fastapi>=0.110
-uvicorn[standard]>=0.29
+uvicorn>=0.29
 python-multipart>=0.0.9
 faster-whisper>=1.2.1
 # av 19 以降は faster-whisper 1.2.1 と互換性がない（音声を読み込めない）
