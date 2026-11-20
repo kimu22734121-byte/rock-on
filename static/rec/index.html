@@ -76,6 +76,7 @@
   .steps { margin:8px 0 0; padding:0; list-style:none; counter-reset:st; }
   .steps li { margin:10px 0; }
   .seg button:disabled { opacity:.4; }
+  .seg.kinds button { line-height:1.3; padding:6px 2px; font-size:.85rem; }
   label.lbl { display:block; font-size:.85rem; color:var(--sub); margin:10px 0 4px; }
   .marks li { padding:6px 0 !important; }
   .marks .t { font-variant-numeric:tabular-nums; color:var(--star); font-weight:700; }
@@ -107,11 +108,17 @@
 <section class="view" id="vRec">
 
   <div class="card" id="setup">
-    <div class="seg" id="kindSeg">
-      <button data-kind="meeting" class="on">🗣 会議</button>
-      <button data-kind="lecture">📚 講習会</button>
+    <div class="seg kinds" id="kindSeg">
+      <button data-kind="meeting" class="on">🗣<br>会議</button>
+      <button data-kind="lecture">📚<br>講習会</button>
+      <button data-kind="conversation">💬<br>会話</button>
+      <button data-kind="other">📝<br>その他</button>
     </div>
+    <p class="muted" id="kindHint" style="margin:6px 0 0"></p>
     <div class="field"><input type="text" id="title" placeholder="タイトル（任意）例: 定例会議"></div>
+    <div class="field hidden" id="instrField">
+      <textarea id="instr" placeholder="どうまとめたいか（任意）例: 3 行で / 手順書の形で / やることだけ箇条書きで"></textarea>
+    </div>
     <label class="lbl">要約の方法</label>
     <div class="seg" id="modeSeg">
       <button data-mode="auto">⚡ 自動（API）</button>
@@ -294,11 +301,30 @@ const startCount = () => { if (!running) { running = true; runStart = Date.now()
 const stopCount  = () => { if (running) { accMs += Date.now() - runStart; running = false; } };
 
 let kind = "meeting";
+// 録音の種類ごとのまとめ方の説明と、タイトル欄の例
+const KINDS = {
+  meeting:      { icon: "🗣", hint: "決定事項・ToDo（担当・期限）・持ち越し課題を整理します。", ph: "例: 定例会議" },
+  lecture:      { icon: "📚", hint: "トピック別の内容・重要ポイント・用語集・質疑応答をまとめます。", ph: "例: 表計算ソフト講座 第2回" },
+  conversation: { icon: "💬", hint: "面談・電話・インタビューなど。話題・相手の要望・約束したこと・次にやることを整理します。", ph: "例: 〇〇さんとの面談" },
+  other:        { icon: "📝", hint: "内容に合わせた形でまとめます。下の欄に、まとめ方の希望を書くこともできます。", ph: "例: アイデアメモ" },
+};
+const kindIcon = (k) => (KINDS[k] || KINDS.other).icon;
+function renderKind() {
+  [...$("kindSeg").children].forEach(x => x.classList.toggle("on", x.dataset.kind === kind));
+  $("kindHint").textContent = KINDS[kind].hint;
+  $("title").placeholder = "タイトル（任意）" + KINDS[kind].ph;
+  $("instrField").classList.toggle("hidden", kind !== "other");
+}
+// 「その他」のときだけ、まとめ方の希望を送る
+const currentInstr = () => kind === "other" ? $("instr").value.trim() : "";
 $("kindSeg").onclick = (e) => {
   const b = e.target.closest("button"); if (!b) return;
   kind = b.dataset.kind;
-  [...$("kindSeg").children].forEach(x => x.classList.toggle("on", x === b));
+  try { localStorage.setItem("kind", kind); } catch {}
+  renderKind();
 };
+try { const k = localStorage.getItem("kind"); if (k && KINDS[k]) kind = k; } catch {}
+renderKind();
 
 // 要約の方法: auto = Claude API で自動 / manual = claude.ai に貼り付け
 let apiAvailable = false;
@@ -343,7 +369,7 @@ async function startRecording(resumeRec = null) {
     rec = resumeRec;
   } else {
     rec = {
-      id: newId(), kind, mode: effectiveMode(), title: $("title").value.trim(), notes: $("notes").value.trim(),
+      id: newId(), kind, mode: effectiveMode(), title: $("title").value.trim(), notes: $("notes").value.trim(), instructions: currentInstr(),
       createdAt: new Date().toISOString(), marks: [], segments: [], elapsedMs: 0, state: "recording",
     };
   }
@@ -474,7 +500,7 @@ async function stopRecording() {
   const done = rec;
   rec = null; mr = null; interrupted = false;
   setLiveUI(false);
-  $("title").value = ""; $("notes").value = "";
+  $("title").value = ""; $("notes").value = ""; $("instr").value = "";
   clearBanner("interrupt");
   setState(`録音を保存しました（${fmt(done.elapsedMs / 1000)}）`, false);
   showView("vList");
@@ -574,6 +600,7 @@ async function upload(r) {
     fd.append("kind", r.kind);
     fd.append("title", r.title || `録音 ${new Date(r.createdAt).toLocaleString("ja-JP")}`);
     fd.append("notes", r.notes || "");
+    fd.append("instructions", r.instructions || "");
     fd.append("marks", JSON.stringify(r.marks || []));
     fd.append("client_id", r.id);
     fd.append("summary_mode", r.mode || effectiveMode());
@@ -643,6 +670,7 @@ $("fileSend").onclick = async () => {
       fd.append("kind", kind);
       fd.append("title", title ? (groups.length > 1 ? `${title}（${baseName(g[0].name)}）` : title) : baseName(g[0].name));
       fd.append("notes", $("notes").value.trim());
+      fd.append("instructions", currentInstr());
       fd.append("marks", "[]");
       fd.append("client_id", newId());
       fd.append("summary_mode", effectiveMode());
@@ -657,7 +685,7 @@ $("fileSend").onclick = async () => {
     }
     toast(groups.length > 1 ? `${groups.length} 件送信しました。まとめを作成中です` : "送信しました。まとめを作成中です");
     renderPicked();
-    $("title").value = ""; $("notes").value = "";
+    $("title").value = ""; $("notes").value = ""; $("instr").value = ""; $("instr").value = "";
     if (groups.length === 1) openJob(lastId); else showView("vList");
   } catch (e) {
     toast(`送信できませんでした（${e.message}）。電波のよい場所で、もう一度「送信してまとめる」を押してください`);
@@ -686,7 +714,7 @@ async function renderPending() {
         <button class="btn sm danger" data-act="del" data-id="${r.id}">削除</button>
       </div>`;
     return `<li><div class="grow">
-      <div class="title">${r.kind === "lecture" ? "📚" : "🗣"} ${esc(r.title || "（無題）")}</div>
+      <div class="title">${kindIcon(r.kind)} ${esc(r.title || "（無題）")}</div>
       <div class="muted">${new Date(r.createdAt).toLocaleString("ja-JP")} ・ ${fmt((r.elapsedMs || 0) / 1000)} ・ ★${r.marks?.length || 0}</div>
       ${status}${btns}</div></li>`;
   }).join("");
@@ -712,7 +740,7 @@ async function refreshList() {
     $("jobList").innerHTML = jobs.length ? jobs.map(j => {
       const cls = pillClass(j.status);
       return `<li data-id="${j.id}" style="cursor:pointer"><div class="grow">
-        <div class="title">${j.kind === "lecture" ? "📚" : "🗣"} ${esc(j.title || "（無題）")}</div>
+        <div class="title">${kindIcon(j.kind)} ${esc(j.title || "（無題）")}</div>
         <div class="muted">${esc((j.created_at || "").replace("T", " ").slice(0, 16))}${j.duration ? " ・ " + fmt(j.duration) : ""}</div>
         </div><span class="pill ${cls}">${STATUS[j.status] || j.status}</span></li>`;
     }).join("") : `<li class="muted">まだありません</li>`;

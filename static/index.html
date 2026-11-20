@@ -57,12 +57,18 @@
         <select id="kind">
           <option value="meeting">会議（決定事項・ToDo を抽出）</option>
           <option value="lecture">講習会・セミナー（要点・用語を整理）</option>
+          <option value="conversation">会話（面談・電話・インタビュー。要望・約束・次にやること）</option>
+          <option value="other">その他（内容に合わせてまとめる）</option>
         </select>
       </div>
       <div>
         <label for="title">タイトル（任意）</label>
         <input id="title" type="text" placeholder="例: 第3回 定例会議">
       </div>
+    </div>
+    <div style="margin-top:12px" id="instrField" hidden>
+      <label for="instr">まとめ方の希望（任意）</label>
+      <input id="instr" type="text" placeholder="例: 3 行で / 手順書の形で / やることだけ箇条書きで">
     </div>
     <div style="margin-top:12px">
       <label for="mode">要約の方法</label>
@@ -142,6 +148,7 @@
 const $ = (id) => document.getElementById(id);
 const STATUS = { queued:"順番待ち", transcribing:"文字起こし中", transcribed:"要約待ち", summarizing:"要約中", done:"完了", error:"エラー" };
 const FINAL = ["done", "error", "transcribed"];
+$("kind").onchange = () => { $("instrField").hidden = $("kind").value !== "other"; };
 
 // 要約の方法（auto / manual）。API キーがなければ manual のみ。
 let apiAvailable = false;
@@ -245,6 +252,7 @@ async function submit(files, perFile = false) {
   fd.append("kind", $("kind").value);
   fd.append("title", title);
   fd.append("notes", $("notes").value);
+  fd.append("instructions", $("kind").value === "other" ? $("instr").value.trim() : "");
   fd.append("summary_mode", $("mode").value);
   showJob({ title, status: "queued", message: "アップロード中…", progress: 0 });
   try {
@@ -354,7 +362,7 @@ async function loadList() {
   for (const j of jobs) {
     const li = document.createElement("li");
     const name = document.createElement("span");
-    name.textContent = `${j.kind === "lecture" ? "📚" : "🗣"} ${j.title || "（無題）"}`;
+    name.textContent = `${{ meeting: "🗣", lecture: "📚", conversation: "💬" }[j.kind] || "📝"} ${j.title || "（無題）"}`;
     const meta = document.createElement("span");
     meta.className = "muted";
     meta.textContent = `${(j.created_at || "").replace("T", " ")}  ${STATUS[j.status] || ""}`;

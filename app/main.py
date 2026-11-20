@@ -19,7 +19,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from .summarize import api_available, manual_prompt, summarize
+from .summarize import KINDS, api_available, manual_prompt, summarize
 from .transcribe import transcribe
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,6 +92,7 @@ def _summary_kwargs(meta: dict) -> dict:
         title=meta.get("title", ""),
         notes=meta.get("notes", ""),
         marks=meta.get("marks", []),
+        instructions=meta.get("instructions", ""),
     )
 
 
@@ -174,6 +175,7 @@ async def create_job(
     kind: str = Form("meeting"),
     title: str = Form(""),
     notes: str = Form(""),
+    instructions: str = Form(""),
     language: str = Form("ja"),
     marks: str = Form("[]"),
     client_id: str = Form(""),
@@ -182,6 +184,8 @@ async def create_job(
     """録音を受け付ける。audio は複数可（録音が中断・再開された場合のパート）。
 
     client_id は録音アプリが付ける ID。通信が切れて再送されても二重登録しない。
+    kind: "meeting"（会議）/ "lecture"（講習会）/ "conversation"（会話）/ "other"（その他）
+    instructions: まとめ方の希望（任意。例: 「3 行で」「手順書の形で」）
     summary_mode: "auto"（Claude API で自動要約）/ "manual"（claude.ai に貼り付けて要約）
     """
     client_id = client_id.strip()[:100]
@@ -206,9 +210,10 @@ async def create_job(
 
     _write_meta(
         d,
-        kind=kind if kind in ("meeting", "lecture") else "meeting",
+        kind=kind if kind in KINDS else "other",
         title=title.strip(),
         notes=notes.strip(),
+        instructions=instructions.strip()[:2000],
         language=language,
         marks=_parse_marks(marks),
         # API キーがなければ自動要約はできないので手動にする
