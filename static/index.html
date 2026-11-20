@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>録音まとめ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --sub:#5f6b7a; --line:#dde2e8; --accent:#2563eb; --rec:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1d2129; --text:#e6e9ee; --sub:#9aa5b4; --line:#2e3440; --accent:#60a5fa; --rec:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; line-height:1.6; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.5rem; margin: 0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  label { font-size:.9rem; color:var(--sub); display:block; margin-bottom:4px; }
+  input[type=text], textarea, select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; }
+  textarea { min-height: 60px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+  button { font:inherit; padding:10px 18px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.rec { background:var(--rec); border-color:var(--rec); color:#fff; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .timer { font-variant-numeric: tabular-nums; font-size:1.6rem; font-weight:600; min-width: 7ch; }
+  .dot { width:12px; height:12px; border-radius:50%; background:var(--rec); display:none; animation: blink 1s infinite; }
+  .recording .dot { display:inline-block; }
+  @keyframes blink { 50% { opacity:.2; } }
+  .muted { color:var(--sub); font-size:.9rem; }
+  progress { width:100%; height:10px; }
+  .tabs button { border-radius:8px 8px 0 0; }
+  .tabs button.active { border-bottom-color: var(--card); font-weight:600; }
+  .md { overflow-wrap:anywhere; }
+  .md table { border-collapse: collapse; width:100%; }
+  .md th, .md td { border:1px solid var(--line); padding:6px 8px; }
+  pre.transcript { white-space: pre-wrap; font-size:.9rem; max-height: 60vh; overflow:auto; }
+  ul.jobs { list-style:none; padding:0; margin:0; }
+  ul.jobs li { padding:8px 0; border-bottom:1px solid var(--line); cursor:pointer; display:flex; justify-content:space-between; gap:8px; }
+  ul.jobs li:hover { color: var(--accent); }
+  .error { color: var(--rec); }
+  audio { width:100%; margin-top:8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>録音まとめ</h1>
+
+  <section class="card">
+    <div class="grid">
+      <div>
+        <label for="kind">種類</label>
+        <select id="kind">
+          <option value="meeting">会議（決定事項・ToDo を抽出）</option>
+          <option value="lecture">講習会・セミナー（要点・用語を整理）</option>
+        </select>
+      </div>
+      <div>
+        <label for="title">タイトル（任意）</label>
+        <input id="title" type="text" placeholder="例: 第3回 定例会議">
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label for="notes">補足（任意：参加者名・専門用語など。認識精度が上がります）</label>
+      <textarea id="notes" placeholder="例: 参加者 田中・鈴木・佐藤 / 用語: Kubernetes, SLA"></textarea>
+    </div>
+  </section>
+
+  <section class="card" id="recCard">
+    <div class="row">
+      <span class="dot"></span>
+      <span class="timer" id="timer">00:00:00</span>
+      <button class="rec" id="btnStart">● 録音開始</button>
+      <button id="btnPause" disabled>一時停止</button>
+      <button class="primary" id="btnStop" disabled>■ 停止してまとめる</button>
+    </div>
+    <p class="muted" id="recHint">録音中はこのタブを閉じないでください。PC がスリープしないよう注意してください。</p>
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+    <label for="file">または録音済みファイルをアップロード（mp3 / m4a / wav / webm など）</label>
+    <div class="row">
+      <input type="file" id="file" accept="audio/*,video/*">
+      <button class="primary" id="btnUpload">アップロードしてまとめる</button>
+    </div>
+  </section>
+
+  <section class="card" id="jobCard" hidden>
+    <div class="row" style="justify-content:space-between">
+      <strong id="jobTitle"></strong>
+      <span class="muted" id="jobStatus"></span>
+    </div>
+    <progress id="jobProgress" max="1" value="0"></progress>
+    <div class="row" style="margin-top:12px" id="jobActions" hidden>
+      <a id="dlSummary" download><button>要約をダウンロード (.md)</button></a>
+      <a id="dlTranscript" download><button>文字起こしをダウンロード (.txt)</button></a>
+      <button id="btnCopy">要約をコピー</button>
+      <button id="btnRetry">要約をやり直す</button>
+    </div>
+    <audio id="player" controls hidden></audio>
+    <div class="tabs row" style="margin-top:16px;gap:4px">
+      <button class="active" data-tab="summary">要約</button>
+      <button data-tab="transcript">文字起こし</button>
+    </div>
+    <div style="border-top:1px solid var(--line);padding-top:12px">
+      <div class="md" id="summaryView"></div>
+      <pre class="transcript" id="transcriptView" hidden></pre>
+    </div>
+  </section>
+
+  <section class="card">
+    <strong>これまでの記録</strong>
+    <ul class="jobs" id="jobList"></ul>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const STATUS = { queued:"順番待ち", transcribing:"文字起こし中", summarizing:"要約中", done:"完了", error:"エラー" };
+
+// ---------- 録音 ----------
+let recorder, chunks = [], stream, startedAt = 0, elapsed = 0, tick, wakeLock;
+
+function fmt(ms) {
+  const s = Math.floor(ms / 1000);
+  return [s / 3600, (s % 3600) / 60, s % 60].map(n => String(Math.floor(n)).padStart(2, "0")).join(":");
+}
+function updateTimer() { $("timer").textContent = fmt(elapsed + (startedAt ? Date.now() - startedAt : 0)); }
+
+$("btnStart").onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    alert("マイクを使えませんでした。ブラウザのマイク許可と、http://localhost で開いているかを確認してください。\n" + e);
+    return;
+  }
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(t => MediaRecorder.isTypeSupported(t)) || "";
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : {});
+  chunks = [];
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = onRecordingStopped;
+  recorder.start(10000); // 10 秒ごとにデータを確定（長時間録音でも安全）
+  startedAt = Date.now(); elapsed = 0;
+  tick = setInterval(updateTimer, 500);
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+  $("recCard").classList.add("recording");
+  $("btnStart").disabled = true; $("btnPause").disabled = false; $("btnStop").disabled = false;
+  window.onbeforeunload = () => "録音中です";
+};
+
+$("btnPause").onclick = () => {
+  if (recorder.state === "recording") {
+    recorder.pause(); elapsed += Date.now() - startedAt; startedAt = 0;
+    $("btnPause").textContent = "再開"; $("recCard").classList.remove("recording");
+  } else {
+    recorder.resume(); startedAt = Date.now();
+    $("btnPause").textContent = "一時停止"; $("recCard").classList.add("recording");
+  }
+};
+
+$("btnStop").onclick = () => {
+  if (startedAt) elapsed += Date.now() - startedAt;
+  startedAt = 0;
+  recorder.stop();
+};
+
+function onRecordingStopped() {
+  clearInterval(tick); updateTimer();
+  stream.getTracks().forEach(t => t.stop());
+  wakeLock?.release?.(); wakeLock = null;
+  window.onbeforeunload = null;
+  $("recCard").classList.remove("recording");
+  $("btnStart").disabled = false; $("btnPause").disabled = true; $("btnStop").disabled = true;
+  $("btnPause").textContent = "一時停止";
+  const type = recorder.mimeType || "audio/webm";
+  const ext = type.includes("mp4") ? "m4a" : "webm";
+  const blob = new Blob(chunks, { type });
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  submit(new File([blob], `recording-${stamp}.${ext}`, { type }));
+}
+
+$("btnUpload").onclick = () => {
+  const f = $("file").files[0];
+  if (!f) return alert("ファイルを選んでください");
+  submit(f);
+};
+
+// ---------- 送信と進捗 ----------
+let pollTimer, currentId;
+
+async function submit(file) {
+  const fd = new FormData();
+  fd.append("audio", file);
+  fd.append("kind", $("kind").value);
+  fd.append("title", $("title").value);
+  fd.append("notes", $("notes").value);
+  showJob({ title: $("title").value || file.name, status: "queued", message: "アップロード中…", progress: 0 });
+  try {
+    const res = await fetch("/api/jobs", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    const { id } = await res.json();
+    openJob(id);
+    loadList();
+  } catch (e) {
+    // アップロードに失敗しても録音を失わないよう、手元に保存できるようにする
+    $("jobStatus").innerHTML = `<span class="error">アップロード失敗: ${e.message}</span>`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file); a.download = file.name; a.textContent = " 録音を保存する";
+    $("jobStatus").appendChild(a);
+  }
+}
+
+function openJob(id) {
+  currentId = id;
+  clearTimeout(pollTimer);
+  poll();
+}
+
+async function poll() {
+  const res = await fetch(`/api/jobs/${currentId}`);
+  if (!res.ok) return;
+  const job = await res.json();
+  showJob(job);
+  if (!["done", "error"].includes(job.status)) pollTimer = setTimeout(poll, 2000);
+  else loadList();
+}
+
+function showJob(job) {
+  $("jobCard").hidden = false;
+  $("jobTitle").textContent = job.title || "（無題）";
+  const cls = job.status === "error" ? "error" : "";
+  $("jobStatus").innerHTML = `<span class="${cls}"></span>`;
+  $("jobStatus").firstChild.textContent = `${STATUS[job.status] || ""} ${job.message || ""}` +
+    (job.status === "transcribing" ? ` ${Math.round((job.progress || 0) * 100)}%` : "");
+  $("jobProgress").value = job.status === "done" ? 1 : job.status === "summarizing" ? 0.95 : (job.progress || 0) * 0.9;
+  $("jobProgress").hidden = job.status === "done";
+  $("summaryView").innerHTML = job.summary ? DOMPurify.sanitize(marked.parse(job.summary)) : `<p class="muted">要約はまだありません</p>`;
+  $("transcriptView").textContent = job.transcript || "文字起こしはまだありません";
+  const done = !!job.id && (job.status === "done" || job.status === "error");
+  $("jobActions").hidden = !done;
+  if (job.id) {
+    $("dlSummary").href = `/api/jobs/${job.id}/summary.md`;
+    $("dlTranscript").href = `/api/jobs/${job.id}/transcript.txt`;
+    $("dlSummary").hidden = !job.summary;
+    $("dlTranscript").hidden = !job.transcript;
+    $("btnRetry").hidden = !job.transcript;
+    $("btnCopy").hidden = !job.summary;
+    const src = `/api/jobs/${job.id}/audio`;
+    if (!$("player").src.endsWith(src)) $("player").src = src;
+    $("player").hidden = false;
+  }
+  window._summary = job.summary || "";
+}
+
+$("btnCopy").onclick = async () => { await navigator.clipboard.writeText(window._summary); $("btnCopy").textContent = "コピーしました"; setTimeout(() => $("btnCopy").textContent = "要約をコピー", 1500); };
+$("btnRetry").onclick = async () => { await fetch(`/api/jobs/${currentId}/resummarize`, { method: "POST" }); openJob(currentId); };
+
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("active", x === b));
+  $("summaryView").hidden = b.dataset.tab !== "summary";
+  $("transcriptView").hidden = b.dataset.tab !== "transcript";
+});
+
+// ---------- 履歴 ----------
+async function loadList() {
+  const jobs = await (await fetch("/api/jobs")).json();
+  const ul = $("jobList"); ul.innerHTML = "";
+  if (!jobs.length) { ul.innerHTML = `<li class="muted">まだありません</li>`; return; }
+  for (const j of jobs) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = `${j.kind === "lecture" ? "📚" : "🗣"} ${j.title || "（無題）"}`;
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = `${(j.created_at || "").replace("T", " ")}  ${STATUS[j.status] || ""}`;
+    li.append(name, meta);
+    li.onclick = () => { openJob(j.id); $("jobCard").scrollIntoView({ behavior: "smooth" }); };
+    ul.appendChild(li);
+  }
+}
+loadList();
+</script>
+</body>
+</html>
