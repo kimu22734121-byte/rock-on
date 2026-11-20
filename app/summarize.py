@@ -45,7 +45,18 @@ TEMPLATES = {
 }
 
 
-def summarize(transcript: str, kind: str = "meeting", title: str = "", notes: str = "") -> str:
+def _fmt(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def summarize(
+    transcript: str,
+    kind: str = "meeting",
+    title: str = "",
+    notes: str = "",
+    marks: list[dict] | None = None,
+) -> str:
     if not transcript.strip():
         return "文字起こし結果が空でした。録音に音声が含まれているか確認してください。"
 
@@ -54,6 +65,14 @@ def summarize(transcript: str, kind: str = "meeting", title: str = "", notes: st
     )
     if notes:
         instruction += f"\n\n補足情報（ユーザー入力）:\n{notes}"
+    if marks:
+        listed = "\n".join(f"- [{_fmt(m['t'])}] {m.get('note') or '（メモなし）'}" for m in marks)
+        instruction += (
+            "\n\n録音中にユーザーが「ここ重要」とマークした時刻です。"
+            "各時刻の前後（おおむね 1 分前〜30 秒後）で話されていた内容を特に重視してまとめに反映し、"
+            "最後に「## 重要マーク箇所」という節を設けて、マークごとに時刻と、その場面で話されていた要点を 1〜3 行で書いてください。"
+            "タイムスタンプは録音全体での経過時間です（多少ずれることがあります）。\n" + listed
+        )
 
     with _client.beta.messages.stream(
         model=MODEL,

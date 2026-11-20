@@ -36,9 +36,13 @@ def transcribe(
     audio_path: Path,
     language: str = "ja",
     hint: str = "",
+    offset: float = 0.0,
     on_progress: Callable[[float], None] | None = None,
-) -> str:
-    """音声を文字起こしし、[hh:mm:ss] 付きのテキストを返す。"""
+) -> tuple[str, float]:
+    """音声を文字起こしし、([hh:mm:ss] 付きのテキスト, 音声の長さ秒) を返す。
+
+    offset はタイムスタンプに足す秒数（複数パートをつなぐとき用）。
+    """
     model = _get_model()
     segments, info = model.transcribe(
         str(audio_path),
@@ -52,7 +56,7 @@ def transcribe(
     for seg in segments:
         text = seg.text.strip()
         if text:
-            lines.append(f"[{_fmt(seg.start)}] {text}")
+            lines.append(f"[{_fmt(offset + seg.start)}] {text}")
         if on_progress and info.duration:
             on_progress(min(seg.end / info.duration, 1.0))
-    return "\n".join(lines)
+    return "\n".join(lines), float(info.duration or 0.0)

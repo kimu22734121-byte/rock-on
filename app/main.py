@@ -28,6 +28,7 @@ app = FastAPI(title="録音まとめ")
 
 # 文字起こしは CPU/GPU を大きく使うので、同時に 1 件ずつ処理する
 _work_lock = threading.Lock()
+_create_lock = threading.Lock()
 
 
 def _job_dir(job_id: str) -> Path:
@@ -39,6 +40,11 @@ def _job_dir(job_id: str) -> Path:
     if not d.is_dir():
         raise HTTPException(404, "ジョブが見つかりません")
     return d
+
+
+def _fmt(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
 def _read_meta(d: Path) -> dict:
@@ -74,25 +80,41 @@ def _summarize_job(d: Path, transcript: str) -> None:
         kind=meta.get("kind", "meeting"),
         title=meta.get("title", ""),
         notes=meta.get("notes", ""),
+        marks=meta.get("marks", []),
     )
     (d / "summary.md").write_text(summary, encoding="utf-8")
     _write_meta(d, status="done", message="完了")
 
 
-def _process(d: Path, audio: Path | None) -> None:
-    """audio が None のときは保存済みの文字起こしを使って要約だけ行う。"""
+def _process(d: Path, parts: list[Path] | None) -> None:
+    """録音（途中で中断された場合は複数パート）を文字起こしして要約する。
+
+    parts が None のときは保存済みの文字起こしを使って要約だけ行う。
+    """
     try:
-        if audio is not None:
+        if parts is not None:
             _write_meta(d, status="queued", message="順番待ち中…")
             with _work_lock:
+                meta = _read_meta(d)
                 _write_meta(d, status="transcribing", message="文字起こし中…", progress=0.0)
-                transcript = transcribe(
-                    audio,
-                    language=_read_meta(d).get("language", "ja"),
-                    hint=_read_meta(d).get("notes", ""),
-                    on_progress=lambda p: _write_meta(d, progress=round(p, 3)),
-                )
+                texts: list[str] = []
+                offset = 0.0
+                for i, part in enumerate(parts):
+                    if i:
+                        texts.append(f"[{_fmt(offset)}] （録音が一時中断され、ここから再開）")
+                    text, duration = transcribe(
+                        part,
+                        language=meta.get("language", "ja"),
+                        hint=meta.get("notes", ""),
+                        offset=offset,
+                        on_progress=lambda p, i=i: _write_meta(d, progress=round((i + p) / len(parts), 3)),
+                    )
+                    if text:
+                        texts.append(text)
+                    offset += duration
+                transcript = "\n".join(texts)
                 (d / "transcript.txt").write_text(transcript, encoding="utf-8")
+                _write_meta(d, duration=round(offset, 1))
         else:
             transcript = (d / "transcript.txt").read_text(encoding="utf-8")
         _summarize_job(d, transcript)
@@ -101,39 +123,78 @@ def _process(d: Path, audio: Path | None) -> None:
         _write_meta(d, status="error", message=_error_message(e))
 
 
+def _parse_marks(raw: str) -> list[dict]:
+    """録音アプリの「重要」マーク: [{"t": 秒, "note": "メモ"}, ...]"""
+    try:
+        items = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "marks の形式が正しくありません")
+    marks = []
+    for m in items if isinstance(items, list) else []:
+        try:
+            t = max(0.0, float(m.get("t", 0)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        marks.append({"t": round(t, 1), "note": str(m.get("note", ""))[:200]})
+    return sorted(marks, key=lambda m: m["t"])[:500]
+
+
+def _find_by_client_id(client_id: str) -> str | None:
+    if not client_id:
+        return None
+    for d in DATA_DIR.iterdir():
+        if (d / "meta.json").exists() and _read_meta(d).get("client_id") == client_id:
+            return d.name
+    return None
+
+
 @app.post("/api/jobs")
 async def create_job(
-    audio: UploadFile = File(...),
+    audio: list[UploadFile] = File(...),
     kind: str = Form("meeting"),
     title: str = Form(""),
     notes: str = Form(""),
     language: str = Form("ja"),
+    marks: str = Form("[]"),
+    client_id: str = Form(""),
 ):
-    job_id = str(uuid.uuid4())
-    d = DATA_DIR / job_id
-    d.mkdir()
-    suffix = Path(audio.filename or "").suffix.lower() or ".webm"
-    if not suffix[1:].isalnum() or len(suffix) > 6:
-        suffix = ".bin"
-    audio_path = d / f"audio{suffix}"
-    with audio_path.open("wb") as f:
-        while chunk := await audio.read(1024 * 1024):
-            f.write(chunk)
+    """録音を受け付ける。audio は複数可（録音が中断・再開された場合のパート）。
+
+    client_id は録音アプリが付ける ID。通信が切れて再送されても二重登録しない。
+    """
+    client_id = client_id.strip()[:100]
+    with _create_lock:
+        if existing := _find_by_client_id(client_id):
+            return {"id": existing, "duplicate": True}
+        job_id = str(uuid.uuid4())
+        d = DATA_DIR / job_id
+        d.mkdir()
+        _write_meta(d, id=job_id, client_id=client_id, status="uploading", created_at=datetime.now().isoformat(timespec="seconds"))
+
+    parts: list[Path] = []
+    for i, up in enumerate(audio):
+        suffix = Path(up.filename or "").suffix.lower() or ".webm"
+        if not suffix[1:].isalnum() or len(suffix) > 6:
+            suffix = ".bin"
+        path = d / f"audio_{i:03d}{suffix}"
+        with path.open("wb") as f:
+            while chunk := await up.read(1024 * 1024):
+                f.write(chunk)
+        parts.append(path)
 
     _write_meta(
         d,
-        id=job_id,
         kind=kind if kind in ("meeting", "lecture") else "meeting",
         title=title.strip(),
         notes=notes.strip(),
         language=language,
-        audio=audio_path.name,
-        created_at=datetime.now().isoformat(timespec="seconds"),
+        marks=_parse_marks(marks),
+        audio_parts=[p.name for p in parts],
         status="queued",
         message="受け付けました",
         progress=0.0,
     )
-    threading.Thread(target=_process, args=(d, audio_path), daemon=True).start()
+    threading.Thread(target=_process, args=(d, parts), daemon=True).start()
     return {"id": job_id}
 
 
@@ -143,7 +204,9 @@ def list_jobs():
     for d in DATA_DIR.iterdir():
         if (d / "meta.json").exists():
             m = _read_meta(d)
-            jobs.append({k: m.get(k) for k in ("id", "title", "kind", "created_at", "status")})
+            if m.get("status") == "uploading":
+                continue
+            jobs.append({k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration")})
     jobs.sort(key=lambda j: j.get("created_at") or "", reverse=True)
     return jobs
 
@@ -185,9 +248,14 @@ def download_transcript(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/audio")
-def download_audio(job_id: str):
+@app.get("/api/jobs/{job_id}/audio/{part}")
+def download_audio(job_id: str, part: int = 0):
     d = _job_dir(job_id)
-    return FileResponse(d / _read_meta(d)["audio"])
+    meta = _read_meta(d)
+    parts = meta.get("audio_parts") or ([meta["audio"]] if meta.get("audio") else [])
+    if not 0 <= part < len(parts):
+        raise HTTPException(404)
+    return FileResponse(d / parts[part])
 
 
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

@@ -1,44 +1,88 @@
 # rock-on — 録音まとめ
 
-会議や講習会をブラウザで録音（または録音ファイルをアップロード）すると、
-**文字起こし → Claude による議事録・講義ノート作成** までを自動で行う Web アプリです。
+会議や講習会を録音すると、**文字起こし → Claude による議事録・講義ノート作成** までを自動で行うアプリです。
+次の 2 つのアプリでできています。
 
-- 🎙 ブラウザで録音（一時停止・再開あり、長時間録音対応）／録音済みファイルのアップロード
-- 📝 文字起こしは **faster-whisper** を手元の PC で実行（無料・音声は外部に送信されない）
-- 🤖 要約は **Claude API**（文字起こしテキストのみ送信）
-  - 会議モード: 概要・議題ごとの議論・決定事項・アクションアイテム（担当/期限）・持ち越し課題
-  - 講習会モード: 概要・トピック別の内容・重要ポイント・用語集・質疑応答・復習のヒント
-- ⏱ 要約の重要箇所にタイムスタンプ付き（録音をその位置から聞き直せる）
-- 💾 結果は `data/` に保存され、履歴から再表示・Markdown / テキストでダウンロード可能
+| アプリ | URL | 役割 |
+|---|---|---|
+| 📱 **録音アプリ**（スマホ用 PWA） | `/rec/` | 録音・「ここ重要」マーク・自動送信・まとめの閲覧 |
+| 🖥 **まとめサーバー**（PC で動かす） | `/` | 文字起こし（Whisper）・要約（Claude）・PC 用の画面 |
 
-## 必要なもの
-
-- Python 3.10 以上
-- Claude API キー（https://console.anthropic.com で取得）
-- （任意）NVIDIA GPU があると文字起こしが大幅に速くなります
-
-## セットアップ
-
-```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows は .venv\Scripts\activate
-pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...   # Windows は set ANTHROPIC_API_KEY=...
+```
+ スマホ（iPhone / Android）                  PC（Windows など）
+┌──────────────────────┐   HTTPS   ┌──────────────────────────────┐
+│ 録音アプリ /rec/        │ ───────▶ │ まとめサーバー                  │
+│ ・録音（5秒ごとに端末保存）│  音声送信  │ ・faster-whisper で文字起こし   │
+│ ・★ここ重要マーク        │ ◀─────── │ ・Claude API で要約            │
+│ ・まとめを見る・共有      │  要約取得  │ ・data/ に保存                │
+└──────────────────────┘           └──────────────────────────────┘
 ```
 
-## 起動
+## 録音アプリ（スマホ）の機能
 
-```bash
+- **ワンタップ録音**：一時停止・再開、録音レベル表示、録音中は画面が自動で消えない
+- **★ ここ重要マーク**：押した時刻を記録。要約でその前後を重点的にまとめ、「重要マーク箇所」の節を作る。タップでメモも付けられる
+- **停止したら自動送信**：サーバーに音声を送ると、文字起こしと要約が自動で始まる
+- **データを失わない**：
+  - 録音は 5 秒ごとにスマホ内（IndexedDB）に保存
+  - 電波がなくても録音でき、つながったら自動で送信
+  - 送信に失敗したら「記録」タブから再送できる
+  - アプリが落ちても、次に開いたときに「送信」または「続きを録音」ができる
+- **中断からの自動再開**：iPhone でバックグラウンドに回ってマイクが止まっても、アプリに戻ると続きから録音。中断前後の録音はサーバーでひとつにつながる
+- **まとめを見る**：要約・文字起こし・重要マーク・録音の再生、コピーや共有（LINE・メールなど）
+
+### 画面ロック中の録音について（重要）
+
+ブラウザの制限で、Web アプリは画面ロック中の録音を保証できません。
+
+| | 画面ロック・アプリ切り替え時 |
+|---|---|
+| Android（Chrome） | 多くの機種で録音が続く |
+| iPhone（Safari） | 止まることがある → アプリに戻ると自動で続きから録音（中断中の音声は入らない） |
+
+**長い会議では、画面をつけたままにしておくのが確実です**（録音中は自動で消えない設定になっています）。
+完全なバックグラウンド録音が必要になったら、この Web アプリを Capacitor でネイティブアプリ化する方法があります。
+
+## セットアップ（Windows）
+
+1. [Python 3.10 以上](https://www.python.org/downloads/) をインストール（「Add python.exe to PATH」にチェック）
+2. このフォルダでコマンドプロンプトを開き、次を実行:
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+set ANTHROPIC_API_KEY=sk-ant-...
 uvicorn app.main:app --port 8000
 ```
 
-ブラウザで **http://localhost:8000** を開きます。
+3. PC のブラウザで http://localhost:8000 を開けば、PC 用の画面が使えます。
 
-> ⚠ マイク録音は `localhost` または HTTPS のページでしか使えません。
-> 別の PC やスマホから使う場合は HTTPS 化（リバースプロキシ等）が必要です。
-> ファイルのアップロードはどこからでも使えます。
+Claude API キーは https://console.anthropic.com で取得します。
+毎回 `set` するのが面倒なら、Windows の「環境変数」に `ANTHROPIC_API_KEY` を登録してください。
 
-初回の文字起こし時に Whisper モデル（medium で約 1.5GB）が自動でダウンロードされます。
+Mac / Linux では `.venv\Scripts\activate` を `source .venv/bin/activate` に、`set` を `export` に置き換えます。
+
+## スマホから使う（HTTPS 化）
+
+スマホのブラウザでマイクを使うには **HTTPS** が必要です。いちばん簡単なのは **Tailscale**（個人利用は無料）です。
+自分の端末どうしだけをつなぐので、**外部の人からはアクセスできず安全**で、外出先からも使えます。
+
+1. PC とスマホの両方に [Tailscale](https://tailscale.com/download) を入れて、同じアカウントでログイン
+2. Tailscale の管理画面（https://login.tailscale.com/admin/dns）で **MagicDNS** と **HTTPS Certificates** を有効にする
+3. PC でまとめサーバーを起動したまま、別のコマンドプロンプトで:
+
+```bat
+tailscale serve --bg 8000
+```
+
+4. 表示された `https://<PC名>.<xxxx>.ts.net` に `/rec/` を付けて、スマホで開く
+   例: `https://my-pc.tail1234.ts.net/rec/`
+5. ホーム画面に追加すると、普通のアプリのように使えます
+   - iPhone：Safari の共有ボタン →「ホーム画面に追加」
+   - Android：Chrome のメニュー →「アプリをインストール」または「ホーム画面に追加」
+
+> ⚠ このアプリにはログイン機能がありません。`--host 0.0.0.0` やポート開放でインターネットに直接公開しないでください。
 
 ## 設定（環境変数）
 
@@ -49,26 +93,44 @@ uvicorn app.main:app --port 8000
 | `WHISPER_COMPUTE_TYPE` | `default` | GPU なら `float16`、CPU で軽くするなら `int8` |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | 要約に使う Claude モデル |
 
-**処理時間の目安（1 時間の録音）**: CPU + medium で 30〜60 分程度、GPU + large-v3 で数分。
-CPU で速くしたい場合は `WHISPER_MODEL=small WHISPER_COMPUTE_TYPE=int8` を試してください。
+初回の文字起こし時に Whisper モデル（medium で約 1.5GB）が自動でダウンロードされます。
+
+**処理時間の目安（1 時間の録音）**：CPU + medium で 30〜60 分ほど、GPU + large-v3 で数分。
+CPU で速くしたいときは `WHISPER_MODEL=small` と `WHISPER_COMPUTE_TYPE=int8` を試してください。
 
 ## 使い方のコツ
 
-- 「補足」欄に **参加者名・専門用語** を書くと、文字起こしと要約の両方で固有名詞の精度が上がります。
-- 要約で API エラーが出ても、文字起こしは保存済みです。「要約をやり直す」で要約だけ再実行できます。
-- 録音中は PC をスリープさせないでください（対応ブラウザでは画面のスリープを自動で防ぎます）。
+- 「補足」欄に **参加者名・専門用語** を書くと、文字起こしと要約の両方で固有名詞を正しく認識しやすくなります。
+- 要約で API エラーが出ても、文字起こしは保存されています。「要約をやり直す」で要約だけ再実行できます。
+- スマホは話者の近く（机の中央など）に置くと、認識精度が上がります。
 
 ## 構成
 
 ```
-app/main.py        FastAPI サーバー（アップロード受付・ジョブ管理・結果配信）
-app/transcribe.py  faster-whisper による文字起こし
-app/summarize.py   Claude API による要約（会議 / 講習会テンプレート）
-static/index.html  録音・アップロード・結果表示の画面
-data/<id>/         録音・文字起こし・要約の保存先（git 管理外）
+app/main.py           まとめサーバー（受付・ジョブ管理・結果配信）
+app/transcribe.py     faster-whisper による文字起こし
+app/summarize.py      Claude API による要約（会議 / 講習会テンプレート、重要マーク反映）
+static/index.html     PC 用の画面（録音・アップロード・結果表示）
+static/rec/           スマホ用 録音アプリ（PWA）
+  index.html          画面と録音処理
+  sw.js               オフライン起動用 Service Worker
+  manifest.webmanifest, icon-*.png
+data/<id>/            録音・文字起こし・要約の保存先（git 管理外）
 ```
+
+### API（録音アプリ ⇔ サーバー）
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| POST | `/api/jobs` | 録音を送信（`audio` 複数可、`kind`, `title`, `notes`, `marks`(JSON), `client_id`） |
+| GET | `/api/jobs` | 一覧 |
+| GET | `/api/jobs/{id}` | 状態・要約・文字起こし・マーク |
+| POST | `/api/jobs/{id}/resummarize` | 要約だけやり直す |
+| GET | `/api/jobs/{id}/audio/{n}` | 録音（n 番目のパート） |
+
+`client_id` が同じ送信は二重登録されません（通信が切れて再送しても安全）。
 
 ## 費用について
 
-Claude API は従量課金です。1 時間の会議の文字起こし（約 2〜3 万文字）の要約で、おおよそ数十円程度です。
-文字起こしはローカル実行のため費用はかかりません。
+Claude API は従量課金です。1 時間の会議（文字起こし 2〜3 万文字ほど）の要約で、数十円程度です。
+文字起こしは PC 上で動くため、費用はかかりません。
