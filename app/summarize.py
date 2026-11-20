@@ -1,4 +1,10 @@
-"""文字起こしテキストを Claude で取りまとめる。"""
+"""文字起こしテキストを Claude で取りまとめる。
+
+要約の方法は 2 通り:
+- 自動: Claude API で要約（API キーが必要・従量課金）
+- 手動: 要約の指示と文字起こしをまとめたテキスト（manual_prompt）を作り、
+        ユーザーが claude.ai（無料プランでも可）に貼り付けて要約してもらう
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,19 @@ import anthropic
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
 
-_client = anthropic.Anthropic()  # ANTHROPIC_API_KEY などから認証情報を読む
+_client: anthropic.Anthropic | None = None
+
+
+def api_available() -> bool:
+    """Claude API のキーが設定されているか（自動要約が使えるか）。"""
+    return bool(os.getenv("ANTHROPIC_API_KEY", "").strip() or os.getenv("ANTHROPIC_AUTH_TOKEN", "").strip())
+
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()  # ANTHROPIC_API_KEY などから認証情報を読む
+    return _client
 
 SYSTEM_PROMPT = """あなたは会議・講習会の記録係です。
 音声認識による文字起こしを読み、参加しなかった人が読んでも内容が分かる日本語の記録を Markdown で作成します。
@@ -50,16 +68,14 @@ def _fmt(seconds: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def summarize(
+def build_user_message(
     transcript: str,
     kind: str = "meeting",
     title: str = "",
     notes: str = "",
     marks: list[dict] | None = None,
 ) -> str:
-    if not transcript.strip():
-        return "文字起こし結果が空でした。録音に音声が含まれているか確認してください。"
-
+    """要約の指示と文字起こしをまとめたユーザーメッセージを作る。"""
     instruction = TEMPLATES.get(kind, TEMPLATES["meeting"]).format(
         title=title or "（タイトルを内容から付けてください）"
     )
@@ -73,8 +89,20 @@ def summarize(
             "最後に「## 重要マーク箇所」という節を設けて、マークごとに時刻と、その場面で話されていた要点を 1〜3 行で書いてください。"
             "タイムスタンプは録音全体での経過時間です（多少ずれることがあります）。\n" + listed
         )
+    return f"<transcript>\n{transcript}\n</transcript>\n\n{instruction}"
 
-    with _client.beta.messages.stream(
+
+def manual_prompt(transcript: str, **kwargs) -> str:
+    """claude.ai に貼り付けるための 1 つのテキスト（役割の説明 + 指示 + 文字起こし）。"""
+    return f"{SYSTEM_PROMPT}\n\n{build_user_message(transcript, **kwargs)}"
+
+
+def summarize(transcript: str, **kwargs) -> str:
+    """Claude API で要約する。kwargs は build_user_message と同じ。"""
+    if not transcript.strip():
+        return "文字起こし結果が空でした。録音に音声が含まれているか確認してください。"
+
+    with _get_client().beta.messages.stream(
         model=MODEL,
         max_tokens=64000,
         system=SYSTEM_PROMPT,
@@ -86,7 +114,7 @@ def summarize(
         messages=[
             {
                 "role": "user",
-                "content": f"<transcript>\n{transcript}\n</transcript>\n\n{instruction}",
+                "content": build_user_message(transcript, **kwargs),
             }
         ],
     ) as stream:

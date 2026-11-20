@@ -48,7 +48,7 @@
 1. [Python](https://www.python.org/downloads/) をインストール（3.12 以上。インストール画面で **「Add python.exe to PATH」にチェック**）
 2. このフォルダの **`start.bat` をダブルクリック**
    - 初回は必要なライブラリを自動でインストールします（数分）
-   - Claude API キー（https://console.anthropic.com で取得）を聞かれるので貼り付けて Enter。`config.env` に保存され、次回からは聞かれません
+   - Claude API キーを聞かれます。持っていれば貼り付けて Enter、**なければ何も入力せずに Enter**（要約は claude.ai に貼り付ける方法になります）。`config.env` に保存され、次回からは聞かれません
 3. 「まとめサーバーを起動します」と表示されたら準備完了。PC のブラウザで http://localhost:8000 を開けます
 
 | ファイル | 役割 |
@@ -69,6 +69,56 @@ pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...
 uvicorn app.main:app --port 8000
 ```
+
+## 要約の方法（2 種類から選べる）
+
+録音アプリ・PC 画面の「要約の方法」で選びます。文字起こしはどちらも PC 上で自動・無料です。
+
+| | ⚡ 自動（API） | 📋 手動（claude.ai） |
+|---|---|---|
+| 費用 | 従量課金（1 時間の会議で約 40 円） | 無料（claude.ai の無料プランで OK） |
+| 手間 | 録音を止めるだけ | コピー → claude.ai に貼り付け → 回答を貼り戻す |
+| 必要なもの | Claude API キー | claude.ai のアカウント |
+
+**手動の流れ**：録音後、記録の画面に「claude.ai で要約する」が出ます。
+① 「指示と文字起こしをコピー」→ ② 「claude.ai を開く」で新しいチャットに貼り付けて送信 → ③ Claude の回答をコピーして貼り付け、「要約として保存」。
+
+- API キーが設定されていないと、自動は選べません（グレー表示）
+- 自動で要約に失敗したとき（クレジット不足など）も、手動の方法で要約できます
+- 手動で作った記録を、あとから「Claude API で自動要約」で作り直すこともできます
+
+### Claude API キーの取り方
+
+1. https://platform.claude.com で登録
+2. **Billing** でクレジットを購入（先払い、最低 5 ドル）
+3. **API Keys** →「Create Key」で作成し、表示された `sk-ant-...` をコピー（一度しか表示されません）
+4. `config.env` の `ANTHROPIC_API_KEY=` に貼り付け（`SKIP_API_KEY=1` の行があれば削除）、`start.bat` を起動し直す
+
+## 録音ファイルはどこに保存される？
+
+**① 録音中〜送信まで：スマホの中**
+- 録音アプリのデータ領域（ブラウザの IndexedDB）に 5 秒ごとに保存されます。写真アプリやファイルアプリには出てきません
+- まだ送信していない録音は、録音アプリの「記録」タブ →「送信待ち」に表示されます
+- **サーバーに届いた時点で、スマホ内の録音は自動で削除**されます（スマホの容量を圧迫しないため）
+
+**② 送信後：まとめサーバーの PC の中**
+
+`start.bat` があるフォルダの中の `data` フォルダに、録音ごとのフォルダが作られます。フォルダ名は録音を送信した日時です。
+
+```
+rock-on\
+└─ data\
+   └─ 20261120-143005-a1b2c3d4\   ← 2026/11/20 14:30:05 に送信した録音
+      ├─ audio_000.webm           録音（iPhone は .m4a）
+      ├─ audio_001.webm           途中で中断・再開した場合の続き
+      ├─ transcript.txt           文字起こし
+      ├─ summary.md               要約（メモ帳で開けます）
+      └─ meta.json                タイトル・重要マークなどの情報
+```
+
+- 録音アプリや PC 画面から、録音の再生・要約や文字起こしのダウンロードもできます
+- 不要になった記録は、このフォルダごと削除してください
+- **バックアップしたいときは `data` フォルダをまるごとコピー**してください
 
 ## スマホから使う（HTTPS 化）
 
@@ -122,22 +172,26 @@ static/rec/           スマホ用 録音アプリ（PWA）
   index.html          画面と録音処理
   sw.js               オフライン起動用 Service Worker
   manifest.webmanifest, icon-*.png
-data/<id>/            録音・文字起こし・要約の保存先（git 管理外）
+data/<日時-ID>/       録音・文字起こし・要約の保存先（git 管理外）
 ```
 
 ### API（録音アプリ ⇔ サーバー）
 
 | メソッド | パス | 内容 |
 |---|---|---|
-| POST | `/api/jobs` | 録音を送信（`audio` 複数可、`kind`, `title`, `notes`, `marks`(JSON), `client_id`） |
+| GET | `/api/config` | 自動要約が使えるか（`api_available`） |
+| POST | `/api/jobs` | 録音を送信（`audio` 複数可、`kind`, `title`, `notes`, `marks`(JSON), `client_id`, `summary_mode`=`auto`/`manual`） |
 | GET | `/api/jobs` | 一覧 |
 | GET | `/api/jobs/{id}` | 状態・要約・文字起こし・マーク |
-| POST | `/api/jobs/{id}/resummarize` | 要約だけやり直す |
+| POST | `/api/jobs/{id}/resummarize` | Claude API で要約（やり直し・手動からの切り替え） |
+| GET | `/api/jobs/{id}/prompt` | claude.ai に貼り付ける用のテキスト |
+| POST | `/api/jobs/{id}/summary` | claude.ai で作った要約を保存（JSON `{"summary": "..."}`） |
 | GET | `/api/jobs/{id}/audio/{n}` | 録音（n 番目のパート） |
 
 `client_id` が同じ送信は二重登録されません（通信が切れて再送しても安全）。
 
 ## 費用について
 
-Claude API は従量課金です。1 時間の会議（文字起こし 2〜3 万文字ほど）の要約で、数十円程度です。
-文字起こしは PC 上で動くため、費用はかかりません。
+- 文字起こし：PC 上で動くため **無料**
+- 要約（手動・claude.ai）：**無料**（無料プランの利用回数の範囲内）
+- 要約（自動・Claude API）：従量課金。1 時間の会議（文字起こし 2〜3 万文字ほど）で約 40 円。5 ドルのチャージで 20 回分ほど

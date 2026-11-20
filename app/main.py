@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import re
+import secrets
 import threading
 import traceback
 import uuid
@@ -13,11 +15,11 @@ from datetime import datetime
 from pathlib import Path
 
 import anthropic
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from .summarize import summarize
+from .summarize import api_available, manual_prompt, summarize
 from .transcribe import transcribe
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,11 +33,21 @@ _work_lock = threading.Lock()
 _create_lock = threading.Lock()
 
 
+# 保存フォルダ名 = ジョブ ID。録音日時から始まるので、エクスプローラーで探しやすい。
+# 例: data/20261120-143005-a1b2c3d4/
+_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{8}$")
+
+
+def _new_job_id() -> str:
+    return f"{datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(4)}"
+
+
 def _job_dir(job_id: str) -> Path:
-    try:
-        uuid.UUID(job_id)
-    except ValueError:
-        raise HTTPException(404, "ジョブが見つかりません")
+    if not _ID_RE.match(job_id):
+        try:
+            uuid.UUID(job_id)  # 以前の形式の ID
+        except ValueError:
+            raise HTTPException(404, "ジョブが見つかりません")
     d = DATA_DIR / job_id
     if not d.is_dir():
         raise HTTPException(404, "ジョブが見つかりません")
@@ -62,7 +74,9 @@ def _write_meta(d: Path, **updates) -> dict:
 
 def _error_message(e: Exception) -> str:
     if isinstance(e, anthropic.AuthenticationError) or "authentication method" in str(e):
-        return "Claude API の認証に失敗しました。ANTHROPIC_API_KEY を設定してください。"
+        return "Claude API の認証に失敗しました。API キーを確認するか、「claude.ai に貼り付けて要約」を使ってください。"
+    if isinstance(e, anthropic.PermissionDeniedError) or "credit balance" in str(e).lower():
+        return "Claude API のクレジットが不足しています。チャージするか、「claude.ai に貼り付けて要約」を使ってください。"
     if isinstance(e, anthropic.RateLimitError):
         return "Claude API の利用上限に達しました。少し待って「要約をやり直す」を押してください。"
     if isinstance(e, anthropic.APIConnectionError):
@@ -72,16 +86,22 @@ def _error_message(e: Exception) -> str:
     return f"処理に失敗しました: {e}"
 
 
-def _summarize_job(d: Path, transcript: str) -> None:
-    meta = _read_meta(d)
-    _write_meta(d, status="summarizing", message="Claude で要約中…", progress=1.0)
-    summary = summarize(
-        transcript,
+def _summary_kwargs(meta: dict) -> dict:
+    return dict(
         kind=meta.get("kind", "meeting"),
         title=meta.get("title", ""),
         notes=meta.get("notes", ""),
         marks=meta.get("marks", []),
     )
+
+
+def _summarize_job(d: Path, transcript: str) -> None:
+    meta = _read_meta(d)
+    if meta.get("summary_mode") == "manual":
+        _write_meta(d, status="transcribed", message="文字起こし完了。claude.ai に貼り付けて要約してください", progress=1.0)
+        return
+    _write_meta(d, status="summarizing", message="Claude で要約中…", progress=1.0)
+    summary = summarize(transcript, **_summary_kwargs(meta))
     (d / "summary.md").write_text(summary, encoding="utf-8")
     _write_meta(d, status="done", message="完了")
 
@@ -157,16 +177,18 @@ async def create_job(
     language: str = Form("ja"),
     marks: str = Form("[]"),
     client_id: str = Form(""),
+    summary_mode: str = Form("auto"),
 ):
     """録音を受け付ける。audio は複数可（録音が中断・再開された場合のパート）。
 
     client_id は録音アプリが付ける ID。通信が切れて再送されても二重登録しない。
+    summary_mode: "auto"（Claude API で自動要約）/ "manual"（claude.ai に貼り付けて要約）
     """
     client_id = client_id.strip()[:100]
     with _create_lock:
         if existing := _find_by_client_id(client_id):
             return {"id": existing, "duplicate": True}
-        job_id = str(uuid.uuid4())
+        job_id = _new_job_id()
         d = DATA_DIR / job_id
         d.mkdir()
         _write_meta(d, id=job_id, client_id=client_id, status="uploading", created_at=datetime.now().isoformat(timespec="seconds"))
@@ -189,6 +211,8 @@ async def create_job(
         notes=notes.strip(),
         language=language,
         marks=_parse_marks(marks),
+        # API キーがなければ自動要約はできないので手動にする
+        summary_mode="auto" if summary_mode == "auto" and api_available() else "manual",
         audio_parts=[p.name for p in parts],
         status="queued",
         message="受け付けました",
@@ -206,7 +230,7 @@ def list_jobs():
             m = _read_meta(d)
             if m.get("status") == "uploading":
                 continue
-            jobs.append({k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration")})
+            jobs.append({k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration", "summary_mode")})
     jobs.sort(key=lambda j: j.get("created_at") or "", reverse=True)
     return jobs
 
@@ -221,13 +245,44 @@ def get_job(job_id: str):
     return meta
 
 
+@app.get("/api/config")
+def get_config():
+    """画面側で「自動要約」を選べるかどうかを判断するための情報。"""
+    return {"api_available": api_available()}
+
+
 @app.post("/api/jobs/{job_id}/resummarize")
 def resummarize(job_id: str):
-    """文字起こしは再利用して要約だけやり直す（API エラー時など）。"""
+    """文字起こしは再利用して、Claude API で要約する（やり直し・手動から自動への切り替え）。"""
     d = _job_dir(job_id)
     if not (d / "transcript.txt").exists():
         raise HTTPException(400, "文字起こしがまだありません")
+    if not api_available():
+        raise HTTPException(400, "API キーが設定されていないため自動要約は使えません")
+    _write_meta(d, summary_mode="auto")
     threading.Thread(target=_process, args=(d, None), daemon=True).start()
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/prompt", response_class=PlainTextResponse)
+def get_manual_prompt(job_id: str):
+    """claude.ai に貼り付ける用のテキスト（要約の指示 + 文字起こし）。"""
+    d = _job_dir(job_id)
+    p = d / "transcript.txt"
+    if not p.exists():
+        raise HTTPException(400, "文字起こしがまだありません")
+    return manual_prompt(p.read_text(encoding="utf-8"), **_summary_kwargs(_read_meta(d)))
+
+
+@app.post("/api/jobs/{job_id}/summary")
+def save_manual_summary(job_id: str, summary: str = Body(..., embed=True)):
+    """claude.ai で作った要約を貼り付けて保存する。"""
+    d = _job_dir(job_id)
+    summary = summary.strip()
+    if not summary:
+        raise HTTPException(400, "要約が空です")
+    (d / "summary.md").write_text(summary + "\n", encoding="utf-8")
+    _write_meta(d, status="done", message="完了", summary_mode="manual")
     return {"ok": True}
 
 

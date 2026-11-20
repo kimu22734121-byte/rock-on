@@ -65,6 +65,14 @@
       </div>
     </div>
     <div style="margin-top:12px">
+      <label for="mode">要約の方法</label>
+      <select id="mode">
+        <option value="auto">⚡ 自動（Claude API で要約・有料）</option>
+        <option value="manual">📋 手動（claude.ai に貼り付けて要約・無料）</option>
+      </select>
+      <p class="muted" id="modeHint" style="margin:4px 0 0"></p>
+    </div>
+    <div style="margin-top:12px">
       <label for="notes">補足（任意：参加者名・専門用語など。認識精度が上がります）</label>
       <textarea id="notes" placeholder="例: 参加者 田中・鈴木・佐藤 / 用語: Kubernetes, SLA"></textarea>
     </div>
@@ -100,6 +108,16 @@
       <button id="btnRetry">要約をやり直す</button>
     </div>
     <audio id="player" controls hidden></audio>
+    <details id="manualBox" hidden style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:10px 12px">
+      <summary><strong>📋 claude.ai で要約する（無料）</strong></summary>
+      <ol>
+        <li><button class="primary" id="mCopy">指示と文字起こしをコピー</button></li>
+        <li style="margin-top:8px"><a href="https://claude.ai/new" target="_blank" rel="noopener">claude.ai を開く</a>（新しいチャットに貼り付けて送信）</li>
+        <li style="margin-top:8px">Claude の回答をコピーして、ここに貼り付け:
+          <textarea id="mPaste" placeholder="ここに Claude の回答を貼り付け" style="min-height:140px;margin-top:6px"></textarea>
+          <button class="primary" id="mSave" style="margin-top:6px">要約として保存</button> <span class="muted" id="mMsg"></span></li>
+      </ol>
+    </details>
     <div class="tabs row" style="margin-top:16px;gap:4px">
       <button class="active" data-tab="summary">要約</button>
       <button data-tab="transcript">文字起こし</button>
@@ -118,7 +136,26 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const STATUS = { queued:"順番待ち", transcribing:"文字起こし中", summarizing:"要約中", done:"完了", error:"エラー" };
+const STATUS = { queued:"順番待ち", transcribing:"文字起こし中", transcribed:"要約待ち", summarizing:"要約中", done:"完了", error:"エラー" };
+const FINAL = ["done", "error", "transcribed"];
+
+// 要約の方法（auto / manual）。API キーがなければ manual のみ。
+let apiAvailable = false;
+function renderMode() {
+  const autoOpt = $("mode").querySelector('option[value="auto"]');
+  autoOpt.disabled = !apiAvailable;
+  if (!apiAvailable) $("mode").value = "manual";
+  $("modeHint").textContent = !apiAvailable
+    ? "サーバーに API キーが設定されていないため、手動（claude.ai に貼り付け）で要約します。"
+    : $("mode").value === "auto" ? "録音後、自動で要約します（1 時間で約 40 円）。" : "文字起こしまで自動で行い、要約は claude.ai で作ります。";
+  $("btnRetry").textContent = "Claude API で要約";
+}
+$("mode") && ($("mode").onchange = () => { try { localStorage.setItem("summaryMode", $("mode").value); } catch {} renderMode(); });
+(async () => {
+  try { $("mode").value = localStorage.getItem("summaryMode") || "auto"; } catch {}
+  try { apiAvailable = !!(await (await fetch("/api/config")).json()).api_available; } catch {}
+  renderMode();
+})();
 
 // ---------- 録音 ----------
 let recorder, chunks = [], stream, startedAt = 0, elapsed = 0, tick, wakeLock;
@@ -196,6 +233,7 @@ async function submit(file) {
   fd.append("kind", $("kind").value);
   fd.append("title", $("title").value);
   fd.append("notes", $("notes").value);
+  fd.append("summary_mode", $("mode").value);
   showJob({ title: $("title").value || file.name, status: "queued", message: "アップロード中…", progress: 0 });
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
@@ -212,7 +250,9 @@ async function submit(file) {
   }
 }
 
+let manualPrompt = null;
 function openJob(id) {
+  if (id !== currentId) { manualPrompt = null; $("mPaste").value = ""; }
   currentId = id;
   clearTimeout(pollTimer);
   poll();
@@ -223,7 +263,7 @@ async function poll() {
   if (!res.ok) return;
   const job = await res.json();
   showJob(job);
-  if (!["done", "error"].includes(job.status)) pollTimer = setTimeout(poll, 2000);
+  if (!FINAL.includes(job.status)) pollTimer = setTimeout(poll, 2000);
   else loadList();
 }
 
@@ -232,20 +272,30 @@ function showJob(job) {
   $("jobTitle").textContent = job.title || "（無題）";
   const cls = job.status === "error" ? "error" : "";
   $("jobStatus").innerHTML = `<span class="${cls}"></span>`;
-  $("jobStatus").firstChild.textContent = `${STATUS[job.status] || ""} ${job.message || ""}` +
+  const msg = job.message && job.message !== STATUS[job.status] ? job.message : "";
+  $("jobStatus").firstChild.textContent = `${STATUS[job.status] || ""} ${msg}` +
     (job.status === "transcribing" ? ` ${Math.round((job.progress || 0) * 100)}%` : "");
   $("jobProgress").value = job.status === "done" ? 1 : job.status === "summarizing" ? 0.95 : (job.progress || 0) * 0.9;
-  $("jobProgress").hidden = job.status === "done";
-  $("summaryView").innerHTML = job.summary ? DOMPurify.sanitize(marked.parse(job.summary)) : `<p class="muted">要約はまだありません</p>`;
+  $("jobProgress").hidden = FINAL.includes(job.status);
+  const esc = (t) => t.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+  $("summaryView").innerHTML = job.summary
+    ? (window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(job.summary)) : `<pre class="transcript">${esc(job.summary)}</pre>`)
+    : `<p class="muted">${job.status === "transcribed" ? "まだ要約していません。上の「claude.ai で要約する」の手順で作成してください。" : "要約はまだありません"}</p>`;
+  const canManual = !!job.id && !!job.transcript && FINAL.includes(job.status);
+  $("manualBox").hidden = !canManual;
+  if (canManual) {
+    if (manualPrompt === null) $("manualBox").open = !job.summary;
+    if (manualPrompt === null) fetch(`/api/jobs/${job.id}/prompt`).then(r => r.ok ? r.text() : null).then(t => { manualPrompt = t; });
+  }
   $("transcriptView").textContent = job.transcript || "文字起こしはまだありません";
-  const done = !!job.id && (job.status === "done" || job.status === "error");
+  const done = !!job.id && FINAL.includes(job.status);
   $("jobActions").hidden = !done;
   if (job.id) {
     $("dlSummary").href = `/api/jobs/${job.id}/summary.md`;
     $("dlTranscript").href = `/api/jobs/${job.id}/transcript.txt`;
     $("dlSummary").hidden = !job.summary;
     $("dlTranscript").hidden = !job.transcript;
-    $("btnRetry").hidden = !job.transcript;
+    $("btnRetry").hidden = !job.transcript || !apiAvailable;
     $("btnCopy").hidden = !job.summary;
     const src = `/api/jobs/${job.id}/audio`;
     if (!$("player").src.endsWith(src)) $("player").src = src;
@@ -255,7 +305,26 @@ function showJob(job) {
 }
 
 $("btnCopy").onclick = async () => { await navigator.clipboard.writeText(window._summary); $("btnCopy").textContent = "コピーしました"; setTimeout(() => $("btnCopy").textContent = "要約をコピー", 1500); };
-$("btnRetry").onclick = async () => { await fetch(`/api/jobs/${currentId}/resummarize`, { method: "POST" }); openJob(currentId); };
+$("btnRetry").onclick = async () => {
+  const r = await fetch(`/api/jobs/${currentId}/resummarize`, { method: "POST" });
+  if (!r.ok) return alert((await r.json()).detail || "失敗しました");
+  openJob(currentId);
+};
+$("mCopy").onclick = async () => {
+  if (!manualPrompt) return alert("準備中です。数秒後にもう一度押してください");
+  await navigator.clipboard.writeText(manualPrompt);
+  $("mMsg").textContent = `コピーしました（${manualPrompt.length.toLocaleString()} 文字）。claude.ai に貼り付けてください`;
+};
+$("mSave").onclick = async () => {
+  const summary = $("mPaste").value.trim();
+  if (!summary) return alert("Claude の回答を貼り付けてください");
+  const r = await fetch(`/api/jobs/${currentId}/summary`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary }),
+  });
+  if (!r.ok) return alert("保存に失敗しました");
+  $("mPaste").value = ""; $("mMsg").textContent = "保存しました";
+  openJob(currentId);
+};
 
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("active", x === b));

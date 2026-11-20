@@ -72,7 +72,11 @@
   ul.list .grow { flex:1; min-width:0; }
   ul.list .title { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .pill { font-size:.75rem; padding:2px 8px; border-radius:99px; background:var(--bg); color:var(--sub); white-space:nowrap; }
-  .pill.done { color:var(--ok); } .pill.error { color:var(--rec); } .pill.busy { color:var(--accent); }
+  .pill.done { color:var(--ok); } .pill.error { color:var(--rec); } .pill.busy { color:var(--accent); } .pill.wait { color:var(--star); }
+  .steps { margin:8px 0 0; padding:0; list-style:none; counter-reset:st; }
+  .steps li { margin:10px 0; }
+  .seg button:disabled { opacity:.4; }
+  label.lbl { display:block; font-size:.85rem; color:var(--sub); margin:10px 0 4px; }
   .marks li { padding:6px 0 !important; }
   .marks .t { font-variant-numeric:tabular-nums; color:var(--star); font-weight:700; }
 
@@ -98,8 +102,9 @@
 </header>
 
 <!-- ================= 録音画面 ================= -->
+<div class="view" style="padding-bottom:0"><div id="banners"></div></div>
+
 <section class="view" id="vRec">
-  <div id="banners"></div>
 
   <div class="card" id="setup">
     <div class="seg" id="kindSeg">
@@ -107,6 +112,12 @@
       <button data-kind="lecture">📚 講習会</button>
     </div>
     <div class="field"><input type="text" id="title" placeholder="タイトル（任意）例: 定例会議"></div>
+    <label class="lbl">要約の方法</label>
+    <div class="seg" id="modeSeg">
+      <button data-mode="auto">⚡ 自動（API）</button>
+      <button data-mode="manual">📋 手動（無料）</button>
+    </div>
+    <p class="muted" id="modeHint" style="margin:6px 0 0"></p>
     <details class="field">
       <summary>補足（参加者名・専門用語など）</summary>
       <textarea id="notes" placeholder="例: 参加者 田中・鈴木 / 用語: SLA, KPI"></textarea>
@@ -168,6 +179,22 @@
     <div id="dActions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
     <div id="dAudio"></div>
   </div>
+  <div class="card hidden" id="dManual">
+    <details id="dManualBox" open>
+      <summary><strong>📋 claude.ai で要約する（無料）</strong></summary>
+      <ol class="steps">
+        <li>① <button class="btn sm primary" id="mCopy">指示と文字起こしをコピー</button></li>
+        <li>② <a href="https://claude.ai/new" target="_blank" rel="noopener"><button class="btn sm">claude.ai を開く</button></a>
+          <div class="muted">新しいチャットに貼り付けて送信します。</div></li>
+        <li>③ Claude の回答をコピーして、ここに貼り付け:
+          <textarea id="mPaste" placeholder="ここに Claude の回答を貼り付け" style="min-height:120px;margin-top:6px"></textarea>
+          <button class="btn sm primary" id="mSave" style="margin-top:6px">要約として保存</button></li>
+      </ol>
+      <textarea id="mFallback" class="hidden" readonly style="min-height:120px"></textarea>
+      <p class="muted">無料プランは 1 日の利用回数に上限があります。長い録音は、貼り付けると添付ファイルの形になりますが、そのまま送信して大丈夫です。</p>
+    </details>
+  </div>
+
   <div class="card hidden" id="dMarksCard">
     <strong>★ 重要マーク</strong>
     <ul class="list marks" id="dMarks"></ul>
@@ -191,7 +218,9 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const API = "/api";
-const STATUS = { uploading:"受信中", queued:"順番待ち", transcribing:"文字起こし中", summarizing:"要約中", done:"完了", error:"エラー" };
+const STATUS = { uploading:"受信中", queued:"順番待ち", transcribing:"文字起こし中", transcribed:"要約待ち", summarizing:"要約中", done:"完了", error:"エラー" };
+const pillClass = (st) => st === "done" ? "done" : st === "error" ? "error" : st === "transcribed" ? "wait" : "busy";
+const FINAL = ["done", "error", "transcribed"];
 const fmt = (sec) => { sec = Math.max(0, Math.floor(sec)); return [sec/3600, sec%3600/60, sec%60].map(n => String(Math.floor(n)).padStart(2,"0")).join(":"); };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
@@ -257,6 +286,33 @@ $("kindSeg").onclick = (e) => {
   [...$("kindSeg").children].forEach(x => x.classList.toggle("on", x === b));
 };
 
+// 要約の方法: auto = Claude API で自動 / manual = claude.ai に貼り付け
+let apiAvailable = false;
+let mode = (() => { try { return localStorage.getItem("summaryMode") || "auto"; } catch { return "auto"; } })();
+// 選んだ方法は保存しておき、API キーがないときだけ一時的に手動にする
+const effectiveMode = () => apiAvailable ? mode : "manual";
+function renderMode() {
+  [...$("modeSeg").children].forEach(b => {
+    b.classList.toggle("on", b.dataset.mode === effectiveMode());
+    if (b.dataset.mode === "auto") b.disabled = !apiAvailable;
+  });
+  $("modeHint").textContent = !apiAvailable
+    ? "サーバーに API キーが設定されていないため、手動（claude.ai に貼り付け）で要約します。"
+    : effectiveMode() === "auto"
+      ? "録音後、自動で要約します（Claude API の料金がかかります。1 時間で約 40 円）。"
+      : "録音後に文字起こしまで自動で行い、要約は claude.ai に貼り付けて作ります（無料）。";
+}
+$("modeSeg").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b || b.disabled) return;
+  mode = b.dataset.mode;
+  try { localStorage.setItem("summaryMode", mode); } catch {}
+  renderMode();
+};
+async function loadConfig() {
+  try { apiAvailable = !!(await (await fetch(`${API}/config`)).json()).api_available; } catch {}
+  renderMode();
+}
+
 function pickMime() {
   const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/aac"];
   return types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
@@ -273,7 +329,7 @@ async function startRecording(resumeRec = null) {
     rec = resumeRec;
   } else {
     rec = {
-      id: newId(), kind, title: $("title").value.trim(), notes: $("notes").value.trim(),
+      id: newId(), kind, mode: effectiveMode(), title: $("title").value.trim(), notes: $("notes").value.trim(),
       createdAt: new Date().toISOString(), marks: [], segments: [], elapsedMs: 0, state: "recording",
     };
   }
@@ -492,6 +548,7 @@ async function upload(r) {
     fd.append("notes", r.notes || "");
     fd.append("marks", JSON.stringify(r.marks || []));
     fd.append("client_id", r.id);
+    fd.append("summary_mode", r.mode || effectiveMode());
 
     const res = await new Promise((resolve, reject) => {
       const x = new XMLHttpRequest();
@@ -570,7 +627,7 @@ async function refreshList() {
   try {
     const jobs = await (await fetch(`${API}/jobs`)).json();
     $("jobList").innerHTML = jobs.length ? jobs.map(j => {
-      const cls = j.status === "done" ? "done" : j.status === "error" ? "error" : "busy";
+      const cls = pillClass(j.status);
       return `<li data-id="${j.id}" style="cursor:pointer"><div class="grow">
         <div class="title">${j.kind === "lecture" ? "📚" : "🗣"} ${esc(j.title || "（無題）")}</div>
         <div class="muted">${esc((j.created_at || "").replace("T", " ").slice(0, 16))}${j.duration ? " ・ " + fmt(j.duration) : ""}</div>
@@ -590,6 +647,8 @@ async function openJob(id) {
   showView("vDetail");
   $("dSum").innerHTML = `<p class="muted">読み込み中…</p>`; $("dTx").textContent = "";
   $("dAudio").innerHTML = ""; $("dActions").innerHTML = "";
+  $("dManual").classList.add("hidden"); $("mPaste").value = ""; $("mFallback").classList.add("hidden");
+  manualPrompt = null;
   await pollJob();
 }
 async function pollJob() {
@@ -597,11 +656,10 @@ async function pollJob() {
   let j;
   try { j = await (await fetch(`${API}/jobs/${curJob}`)).json(); } catch { pollT = setTimeout(pollJob, 5000); return; }
   $("dTitle").textContent = j.title || "（無題）";
-  const cls = j.status === "done" ? "done" : j.status === "error" ? "error" : "busy";
-  $("dStatus").className = "pill " + cls;
+  $("dStatus").className = "pill " + pillClass(j.status);
   $("dStatus").textContent = (STATUS[j.status] || j.status) + (j.status === "transcribing" ? ` ${Math.round((j.progress || 0) * 100)}%` : "");
   $("dMeta").textContent = `${(j.created_at || "").replace("T", " ").slice(0, 16)}${j.duration ? " ・ " + fmt(j.duration) : ""}`;
-  $("dProg").classList.toggle("hidden", j.status === "done" || j.status === "error");
+  $("dProg").classList.toggle("hidden", FINAL.includes(j.status));
   $("dProg").value = j.status === "summarizing" ? 0.95 : (j.progress || 0) * 0.9;
   $("dErr").classList.toggle("hidden", j.status !== "error");
   $("dErr").textContent = j.status === "error" ? j.message : "";
@@ -612,7 +670,21 @@ async function pollJob() {
 
   $("dSum").innerHTML = j.summary
     ? (window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(j.summary)) : `<pre class="tx">${esc(j.summary)}</pre>`)
-    : `<p class="muted">${j.status === "error" ? "要約はまだありません" : "まとめを作成中です。この画面を開いたままにすると自動で更新されます。"}</p>`;
+    : `<p class="muted">${
+        j.status === "transcribed" ? "まだ要約していません。上の「claude.ai で要約する」の手順で作成してください。"
+        : j.status === "error" ? "要約はまだありません"
+        : "まとめを作成中です。この画面を開いたままにすると自動で更新されます。"}</p>`;
+
+  // 手動要約パネル: 文字起こしができていて、要約処理中でなければ表示
+  const canManual = !!j.transcript && FINAL.includes(j.status);
+  $("dManual").classList.toggle("hidden", !canManual);
+  if (canManual) {
+    $("dManualBox").open = !j.summary;   // 要約済みなら畳んでおく（作り直したいときに開く）
+    if (manualPrompt === null) {
+      // iPhone ではボタンを押した瞬間にコピーしないと失敗するため、先に取得しておく
+      fetch(`${API}/jobs/${j.id}/prompt`).then(r => r.ok ? r.text() : null).then(t => { manualPrompt = t; });
+    }
+  }
   $("dTx").textContent = j.transcript || "文字起こしはまだありません";
 
   const parts = j.audio_parts || [];
@@ -622,17 +694,48 @@ async function pollJob() {
   }
   const acts = [];
   if (j.summary) acts.push(`<button class="btn sm" id="aCopy">要約をコピー</button>`, `<button class="btn sm" id="aShare">共有</button>`);
-  if (j.transcript && j.status !== "summarizing") acts.push(`<button class="btn sm" id="aRetry">要約をやり直す</button>`);
+  if (j.transcript && FINAL.includes(j.status) && apiAvailable)
+    acts.push(`<button class="btn sm" id="aRetry">${j.summary ? "Claude API で要約し直す" : "Claude API で自動要約"}</button>`);
   $("dActions").innerHTML = acts.join("");
   $("aCopy") && ($("aCopy").onclick = async () => { await navigator.clipboard.writeText(j.summary); toast("コピーしました"); });
   $("aShare") && ($("aShare").onclick = async () => {
     if (navigator.share) { try { await navigator.share({ title: j.title || "要約", text: j.summary }); } catch {} }
     else { await navigator.clipboard.writeText(j.summary); toast("共有に未対応のためコピーしました"); }
   });
-  $("aRetry") && ($("aRetry").onclick = async () => { await fetch(`${API}/jobs/${j.id}/resummarize`, { method: "POST" }); pollJob(); });
+  $("aRetry") && ($("aRetry").onclick = async () => {
+    const r = await fetch(`${API}/jobs/${j.id}/resummarize`, { method: "POST" });
+    if (!r.ok) return toast((await r.json()).detail || "失敗しました");
+    pollJob();
+  });
 
-  if (!["done", "error"].includes(j.status)) pollT = setTimeout(pollJob, 3000);
+  if (!FINAL.includes(j.status)) pollT = setTimeout(pollJob, 3000);
 }
+
+let manualPrompt = null;
+$("mCopy").onclick = async () => {
+  if (!manualPrompt) return toast("準備中です。数秒後にもう一度押してください");
+  try {
+    await navigator.clipboard.writeText(manualPrompt);
+    toast(`コピーしました（${manualPrompt.length.toLocaleString()} 文字）。claude.ai に貼り付けてください`);
+  } catch {
+    // コピーできない環境では、全選択した状態で表示して手動でコピーしてもらう
+    $("mFallback").value = manualPrompt;
+    $("mFallback").classList.remove("hidden");
+    $("mFallback").focus(); $("mFallback").select();
+    toast("自動でコピーできませんでした。表示された文章を長押しして「すべて選択」→「コピー」してください");
+  }
+};
+$("mSave").onclick = async () => {
+  const summary = $("mPaste").value.trim();
+  if (!summary) return toast("Claude の回答を貼り付けてください");
+  const r = await fetch(`${API}/jobs/${curJob}/summary`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary }),
+  });
+  if (!r.ok) return toast("保存に失敗しました");
+  $("mPaste").value = "";
+  toast("要約を保存しました");
+  pollJob();
+};
 $("dSeg").onclick = (e) => {
   const b = e.target.closest("button"); if (!b) return;
   [...$("dSeg").children].forEach(x => x.classList.toggle("on", x === b));
@@ -664,6 +767,8 @@ function toast(msg) { showBanner("info", esc(msg)); }
 // ================= 起動時 =================
 (async () => {
   updateNet();
+  renderMode();
+  loadConfig();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   navigator.storage?.persist?.(); // 端末が容量不足でもデータを消されにくくする
   const recs = await db.getRecs();

@@ -44,13 +44,24 @@ copy /y requirements.txt ".venv\installed-requirements.txt" >nul
 rem ---- İ’è config.env ‚ğ“Ç‚İ‚Ş ----
 if exist config.env for /f "usebackq eol=# tokens=1,* delims==" %%A in ("config.env") do set "%%A=%%B"
 if defined ANTHROPIC_API_KEY goto have_key
+if defined SKIP_API_KEY goto no_key
 echo.
-echo Claude API ƒL[‚ğ“ü—Í‚µ‚Ä‚­‚¾‚³‚¢Bhttps://console.anthropic.com ‚Åæ“¾‚Å‚«‚Ü‚·B
-echo “ü—Í‚µ‚½ƒL[‚Í‚±‚ÌƒtƒHƒ‹ƒ_‚Ì config.env ‚É•Û‘¶‚³‚êAŸ‰ñ‚©‚ç‚Í•·‚©‚ê‚Ü‚¹‚ñB
+echo Claude API ƒL[‚ğ“ü—Í‚µ‚Ä‚­‚¾‚³‚¢Bhttps://platform.claude.com ‚Åæ“¾‚Å‚«‚Ü‚·B
+echo   ƒL[‚ª‚ ‚é‚ÆA˜^‰¹Œã‚É—v–ñ‚Ü‚Å©“®‚Åì¬‚µ‚Ü‚·B—L—¿A1 ŠÔ‚Å–ñ 40 ‰~‚Å‚·B
+echo   ƒL[‚È‚µ‚Åg‚¤ê‡‚ÍA‰½‚à“ü—Í‚¹‚¸‚É Enter ‚ğ‰Ÿ‚µ‚Ä‚­‚¾‚³‚¢B
+echo   ‚»‚Ìê‡A—v–ñ‚Í claude.ai ‚É“\‚è•t‚¯‚Äì‚è‚Ü‚·B–³—¿‚Å‚·B
+echo “ü—Í“à—e‚Í‚±‚ÌƒtƒHƒ‹ƒ_‚Ì config.env ‚É•Û‘¶‚³‚êAŸ‰ñ‚©‚ç‚Í•·‚©‚ê‚Ü‚¹‚ñB
 set /p "ANTHROPIC_API_KEY=API ƒL[: "
-if not defined ANTHROPIC_API_KEY goto fail_key
+if defined ANTHROPIC_API_KEY goto save_key
+>>config.env echo SKIP_API_KEY=1
+echo ƒL[‚È‚µ‚Åg‚¢‚Ü‚·B‚ ‚Æ‚©‚çİ’è‚·‚é‚Æ‚«‚Í config.env ‚ğ•ÒW‚µ‚Ä‚­‚¾‚³‚¢B
+goto no_key
+:save_key
 >>config.env echo ANTHROPIC_API_KEY=%ANTHROPIC_API_KEY%
 echo •Û‘¶‚µ‚Ü‚µ‚½B
+goto have_key
+:no_key
+echo [‚¨’m‚ç‚¹] API ƒL[‚È‚µ‚Å‹N“®‚µ‚Ü‚·B—v–ñ‚Í claude.ai ‚É“\‚è•t‚¯‚é•û–@‚Åì¬‚µ‚Ü‚·B
 :have_key
 if not defined PORT set "PORT=8000"
 
@@ -92,7 +103,3 @@ echo   ‰ğŒˆ‚µ‚È‚¢ê‡‚Í Python 3.12 ‚ğ“ü‚ê’¼‚µA‚±‚ÌƒtƒHƒ‹ƒ_‚Ì .venv ‚ğíœ‚µ‚Ä‚
 pause
 exit /b 1
 
-:fail_key
-echo [ƒGƒ‰[] API ƒL[‚ª“ü—Í‚³‚ê‚Ü‚¹‚ñ‚Å‚µ‚½B‚à‚¤ˆê“x start.bat ‚ğÀs‚µ‚Ä‚­‚¾‚³‚¢B
-pause
-exit /b 1
