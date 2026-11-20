@@ -88,11 +88,15 @@
     </div>
     <p class="muted" id="recHint">録音中はこのタブを閉じないでください。PC がスリープしないよう注意してください。</p>
     <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
-    <label for="file">または録音済みファイルをアップロード（mp3 / m4a / wav / webm など）</label>
+    <label for="file">または録音済みファイルからまとめる（mp3 / m4a / wav / 動画の mp4 など。複数選択可）</label>
     <div class="row">
-      <input type="file" id="file" accept="audio/*,video/*">
+      <input type="file" id="file" accept="audio/*,video/*" multiple>
       <button class="primary" id="btnUpload">アップロードしてまとめる</button>
     </div>
+    <label class="muted" id="joinRow" hidden style="margin-top:8px">
+      <input type="checkbox" id="joinFiles" checked>
+      1 つの記録としてつなげる（講習会の前半・後半など）。オフにするとファイルごとに別の記録になります。
+    </label>
   </section>
 
   <section class="card" id="jobCard" hidden>
@@ -218,23 +222,31 @@ function onRecordingStopped() {
   submit(new File([blob], `recording-${stamp}.${ext}`, { type }));
 }
 
-$("btnUpload").onclick = () => {
-  const f = $("file").files[0];
-  if (!f) return alert("ファイルを選んでください");
-  submit(f);
+$("file").onchange = () => { $("joinRow").hidden = $("file").files.length < 2; };
+$("btnUpload").onclick = async () => {
+  // 「講習_1」「講習_2」…が番号順になるよう、名前の自然順で並べる
+  const files = [...$("file").files].sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+  if (!files.length) return alert("ファイルを選んでください");
+  if (files.length === 1 || $("joinFiles").checked) return submit(files);
+  for (const f of files) if (!(await submit([f], true))) break;   // 失敗したらそこで止める
 };
 
 // ---------- 送信と進捗 ----------
 let pollTimer, currentId;
 
-async function submit(file) {
+async function submit(files, perFile = false) {
+  if (!Array.isArray(files)) files = [files];
+  const file = files[0];
+  const base = file.name.replace(/\.[^.]+$/, "");
+  const typed = $("title").value.trim();
+  const title = typed ? (perFile ? `${typed}（${base}）` : typed) : base;
   const fd = new FormData();
-  fd.append("audio", file);
+  files.forEach(f => fd.append("audio", f, f.name));
   fd.append("kind", $("kind").value);
-  fd.append("title", $("title").value);
+  fd.append("title", title);
   fd.append("notes", $("notes").value);
   fd.append("summary_mode", $("mode").value);
-  showJob({ title: $("title").value || file.name, status: "queued", message: "アップロード中…", progress: 0 });
+  showJob({ title, status: "queued", message: "アップロード中…", progress: 0 });
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
     if (!res.ok) throw new Error(await res.text());
@@ -247,7 +259,9 @@ async function submit(file) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(file); a.download = file.name; a.textContent = " 録音を保存する";
     $("jobStatus").appendChild(a);
+    return false;
   }
+  return true;
 }
 
 let manualPrompt = null;

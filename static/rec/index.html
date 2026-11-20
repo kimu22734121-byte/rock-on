@@ -145,6 +145,20 @@
     <ul class="list marks" id="markList"></ul>
   </div>
 
+  <div class="card" id="fileCard">
+    <strong>📁 録音済みのファイルからまとめる</strong>
+    <p class="muted" style="margin:4px 0 10px">ボイスメモやほかのアプリで録った音声、講習会の動画などを選べます。上の「会議／講習会」「タイトル」「要約の方法」の設定が使われます。</p>
+    <label class="btn" for="filePick" style="display:inline-block">ファイルを選ぶ</label>
+    <input type="file" id="filePick" accept="audio/*,video/*,.m4a,.mp3,.wav,.aac,.ogg,.opus,.webm,.mp4,.mov" multiple class="hidden">
+    <ul class="list" id="fileList"></ul>
+    <label id="joinRow" class="muted hidden" style="display:flex;gap:8px;align-items:flex-start;margin:6px 0">
+      <input type="checkbox" id="joinFiles" checked style="margin-top:4px">
+      <span>1 つの記録としてつなげる（講習会の前半・後半など、分かれたファイルの場合）。オフにすると、ファイルごとに別の記録になります。</span>
+    </label>
+    <div id="fileProg" class="hidden"><progress max="1" value="0" id="fileProgBar"></progress><span class="muted" id="fileProgText"></span></div>
+    <button class="btn primary hidden" id="fileSend" style="margin-top:8px">送信してまとめる</button>
+  </div>
+
   <p class="muted" id="tips">
     録音データは 5 秒ごとにこのスマホ内に保存され、停止すると自動でまとめ用サーバーに送信されます。
     電波がなくても録音でき、つながったときに送信されます。
@@ -516,6 +530,7 @@ function setLiveUI(live) {
   $("idleCtl").classList.toggle("hidden", live);
   $("liveCtl").classList.toggle("hidden", !live);
   $("setup").classList.toggle("hidden", live);
+  $("fileCard").classList.toggle("hidden", live);
   $("btnPause").textContent = "一時停止";
   if (!live) { $("markCard").classList.add("hidden"); $("timer").textContent = "00:00:00"; }
 }
@@ -528,6 +543,19 @@ $("btnStop").onclick = stopRecording;
 
 // ================= 送信 =================
 const uploading = new Map(); // recId -> progress(0..1)
+
+// 録音をサーバーに送る（進み具合を onProgress(0〜1) で知らせる）
+function postJob(fd, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", `${API}/jobs`);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    x.onload = () => x.status < 300 ? resolve(JSON.parse(x.responseText)) : reject(new Error(`サーバーエラー ${x.status}`));
+    x.onerror = () => reject(new Error("通信できませんでした"));
+    x.ontimeout = () => reject(new Error("タイムアウトしました"));
+    x.send(fd);
+  });
+}
 
 async function upload(r) {
   if (uploading.has(r.id)) return;
@@ -550,15 +578,7 @@ async function upload(r) {
     fd.append("client_id", r.id);
     fd.append("summary_mode", r.mode || effectiveMode());
 
-    const res = await new Promise((resolve, reject) => {
-      const x = new XMLHttpRequest();
-      x.open("POST", `${API}/jobs`);
-      x.upload.onprogress = (e) => { if (e.lengthComputable) { uploading.set(r.id, e.loaded / e.total); renderPending(); } };
-      x.onload = () => x.status < 300 ? resolve(JSON.parse(x.responseText)) : reject(new Error(`サーバーエラー ${x.status}`));
-      x.onerror = () => reject(new Error("通信できませんでした"));
-      x.ontimeout = () => reject(new Error("タイムアウトしました"));
-      x.send(fd);
-    });
+    const res = await postJob(fd, (p) => { uploading.set(r.id, p); renderPending(); });
     r.state = "uploaded"; r.jobId = res.id; r.error = "";
     await db.putRec(r);
     await db.delChunks(r.id);      // サーバーに届いたのでスマホ内の音声は削除
@@ -583,6 +603,69 @@ async function retryPending() {
 window.addEventListener("online", () => { updateNet(); retryPending(); });
 window.addEventListener("offline", updateNet);
 function updateNet() { $("net").textContent = navigator.onLine ? "" : "オフライン"; }
+
+// ================= 録音済みファイルの送信 =================
+let picked = [];
+const mb = (n) => (n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0) + " MB";
+const baseName = (name) => name.replace(/\.[^.]+$/, "");
+$("filePick").onchange = () => {
+  // 「講習_1」「講習_2」…が番号順に並ぶよう、名前の自然順で並べる
+  picked = [...$("filePick").files].sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+  $("filePick").value = "";
+  renderPicked();
+};
+function renderPicked() {
+  $("fileList").innerHTML = picked.map((f, i) =>
+    `<li><span class="grow"><div class="title">${picked.length > 1 ? `${i + 1}. ` : ""}${esc(f.name)}</div>
+      <div class="muted">${mb(f.size)}</div></span>
+      <button class="btn sm danger" data-i="${i}">外す</button></li>`).join("");
+  $("joinRow").classList.toggle("hidden", picked.length < 2);
+  $("fileSend").classList.toggle("hidden", !picked.length);
+  $("fileSend").disabled = false;
+}
+$("fileList").onclick = (e) => {
+  const b = e.target.closest("button[data-i]"); if (!b) return;
+  picked.splice(+b.dataset.i, 1); renderPicked();
+};
+$("fileSend").onclick = async () => {
+  if (!picked.length) return;
+  const join = picked.length > 1 && $("joinFiles").checked;
+  const groups = join ? [picked] : picked.map(f => [f]);
+  const total = groups.reduce((n, g) => n + g.reduce((m, f) => m + f.size, 0), 0) || 1;
+  let sent = 0, lastId = null;
+  $("fileSend").disabled = true;
+  $("fileProg").classList.remove("hidden");
+  try {
+    for (const [gi, g] of groups.entries()) {
+      const fd = new FormData();
+      g.forEach(f => fd.append("audio", f, f.name));
+      const title = $("title").value.trim();
+      fd.append("kind", kind);
+      fd.append("title", title ? (groups.length > 1 ? `${title}（${baseName(g[0].name)}）` : title) : baseName(g[0].name));
+      fd.append("notes", $("notes").value.trim());
+      fd.append("marks", "[]");
+      fd.append("client_id", newId());
+      fd.append("summary_mode", effectiveMode());
+      const size = g.reduce((m, f) => m + f.size, 0);
+      const res = await postJob(fd, (p) => {
+        const all = (sent + size * p) / total;
+        $("fileProgBar").value = all;
+        $("fileProgText").textContent = ` 送信中 ${Math.round(all * 100)}%` + (groups.length > 1 ? `（${gi + 1}/${groups.length}）` : "");
+      });
+      sent += size; lastId = res.id;
+      picked = picked.filter(f => !g.includes(f));   // 送れた分はリストから外す（失敗時の再送で二重にしない）
+    }
+    toast(groups.length > 1 ? `${groups.length} 件送信しました。まとめを作成中です` : "送信しました。まとめを作成中です");
+    renderPicked();
+    $("title").value = ""; $("notes").value = "";
+    if (groups.length === 1) openJob(lastId); else showView("vList");
+  } catch (e) {
+    toast(`送信できませんでした（${e.message}）。電波のよい場所で、もう一度「送信してまとめる」を押してください`);
+    renderPicked();
+  } finally {
+    $("fileProg").classList.add("hidden");
+  }
+};
 
 // ================= 一覧 =================
 async function renderPending() {
