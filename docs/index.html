@@ -198,6 +198,26 @@
       <strong id="dTitle"></strong><span class="pill" id="dStatus"></span>
     </div>
     <div class="muted" id="dMeta"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+      <span class="pill" id="dKind"></span>
+      <button class="btn sm" id="dEditBtn">種類・タイトルを変更</button>
+    </div>
+    <div id="dEdit" class="hidden" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+      <div class="seg kinds" id="eKindSeg">
+        <button data-kind="meeting">🗣<br>会議</button>
+        <button data-kind="lecture">📚<br>講習会</button>
+        <button data-kind="conversation">💬<br>会話</button>
+        <button data-kind="other">📝<br>その他</button>
+      </div>
+      <div class="field"><input type="text" id="eTitle" placeholder="タイトル"></div>
+      <div class="field hidden" id="eInstrField">
+        <textarea id="eInstr" placeholder="どうまとめたいか（任意）例: 3 行で / 手順書の形で"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn sm primary" id="eSave">保存</button>
+        <button class="btn sm" id="eCancel">やめる</button>
+      </div>
+    </div>
     <progress id="dProg" max="1" value="0"></progress>
     <div id="dErr" class="banner err hidden"></div>
     <div id="dActions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
@@ -347,10 +367,10 @@ const stopCount  = () => { if (running) { accMs += Date.now() - runStart; runnin
 let kind = "meeting";
 // 録音の種類ごとのまとめ方の説明と、タイトル欄の例
 const KINDS = {
-  meeting:      { icon: "🗣", hint: "決定事項・ToDo（担当・期限）・持ち越し課題を整理します。", ph: "例: 定例会議" },
-  lecture:      { icon: "📚", hint: "トピック別の内容・重要ポイント・用語集・質疑応答をまとめます。", ph: "例: 表計算ソフト講座 第2回" },
-  conversation: { icon: "💬", hint: "面談・電話・インタビューなど。話題・相手の要望・約束したこと・次にやることを整理します。", ph: "例: 〇〇さんとの面談" },
-  other:        { icon: "📝", hint: "内容に合わせた形でまとめます。下の欄に、まとめ方の希望を書くこともできます。", ph: "例: アイデアメモ" },
+  meeting:      { label: "会議", icon: "🗣", hint: "決定事項・ToDo（担当・期限）・持ち越し課題を整理します。", ph: "例: 定例会議" },
+  lecture:      { label: "講習会", icon: "📚", hint: "トピック別の内容・重要ポイント・用語集・質疑応答をまとめます。", ph: "例: 表計算ソフト講座 第2回" },
+  conversation: { label: "会話", icon: "💬", hint: "面談・電話・インタビューなど。話題・相手の要望・約束したこと・次にやることを整理します。", ph: "例: 〇〇さんとの面談" },
+  other:        { label: "その他", icon: "📝", hint: "内容に合わせた形でまとめます。下の欄に、まとめ方の希望を書くこともできます。", ph: "例: アイデアメモ" },
 };
 const kindIcon = (k) => (KINDS[k] || KINDS.other).icon;
 function renderKind() {
@@ -809,6 +829,7 @@ async function openJob(id) {
   $("dSum").innerHTML = `<p class="muted">読み込み中…</p>`; $("dTx").textContent = "";
   $("dAudio").innerHTML = ""; $("dActions").innerHTML = "";
   $("dManual").classList.add("hidden"); $("mPaste").value = ""; $("mFallback").classList.add("hidden");
+  $("dEdit").classList.add("hidden");
   manualPrompt = null;
   await pollJob();
 }
@@ -817,6 +838,9 @@ async function pollJob() {
   let j;
   try { j = await (await fetch(`${API}/jobs/${curJob}`)).json(); } catch { pollT = setTimeout(pollJob, 5000); return; }
   $("dTitle").textContent = j.title || "（無題）";
+  const k = KINDS[j.kind] || KINDS.other;
+  $("dKind").textContent = `${k.icon} ${k.label}`;
+  curJobData = j;
   $("dStatus").className = "pill " + pillClass(j.status);
   $("dStatus").textContent = (STATUS[j.status] || j.status) + (j.status === "transcribing" ? ` ${Math.round((j.progress || 0) * 100)}%` : "");
   $("dMeta").textContent = `${(j.created_at || "").replace("T", " ").slice(0, 16)}${j.duration ? " ・ " + fmt(j.duration) : ""}`;
@@ -880,6 +904,43 @@ async function pollJob() {
   if (!FINAL.includes(j.status)) pollT = setTimeout(pollJob, 3000);
 }
 
+// ---- 種類・タイトルの変更 ----
+let curJobData = null, editKind = "meeting";
+function renderEditKind() {
+  [...$("eKindSeg").children].forEach(x => x.classList.toggle("on", x.dataset.kind === editKind));
+  $("eInstrField").classList.toggle("hidden", editKind !== "other");
+}
+$("dEditBtn").onclick = () => {
+  const j = curJobData; if (!j) return;
+  editKind = KINDS[j.kind] ? j.kind : "other";
+  $("eTitle").value = j.title || "";
+  $("eInstr").value = j.instructions || "";
+  renderEditKind();
+  $("dEdit").classList.remove("hidden");
+};
+$("eKindSeg").onclick = (e) => { const b = e.target.closest("button"); if (b) { editKind = b.dataset.kind; renderEditKind(); } };
+$("eCancel").onclick = () => $("dEdit").classList.add("hidden");
+$("eSave").onclick = async () => {
+  const j = curJobData; if (!j) return;
+  const kindChanged = editKind !== j.kind || (editKind === "other" && $("eInstr").value.trim() !== (j.instructions || ""));
+  const r = await fetch(`${API}/jobs/${j.id}/meta`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: editKind, title: $("eTitle").value, instructions: editKind === "other" ? $("eInstr").value : "" }),
+  });
+  if (!r.ok) return toast("変更できませんでした");
+  $("dEdit").classList.add("hidden");
+  manualPrompt = null;   // 新しい種類の指示で、claude.ai 用の文章を作り直す
+  if (kindChanged && j.summary) {
+    toast(apiAvailable
+      ? "変更しました。新しい種類で要約を作り直すには「Claude API で要約し直す」か、下の「claude.ai で要約する」を使ってください"
+      : "変更しました。新しい種類で要約を作り直すには、下の「claude.ai で要約する」を使ってください");
+  } else {
+    toast("変更しました");
+  }
+  await pollJob();
+  if (kindChanged && j.summary) $("dManualBox").open = true;
+};
+
 let manualPrompt = null;
 $("mCopy").onclick = async () => {
   if (!manualPrompt) return toast("準備中です。数秒後にもう一度押してください");
@@ -932,7 +993,11 @@ function showBanner(type, html, key = "") {
   $("banners").prepend(d);
 }
 function clearBanner(key) { $("banners").querySelectorAll(`[data-key="${key}"]`).forEach(x => x.remove()); }
-function toast(msg) { showBanner("info", esc(msg)); }
+function toast(msg) {
+  // お知らせは最新の 1 つだけ表示する（たまって画面が下にずれないように）
+  $("banners").querySelectorAll('.banner.info[data-key=""]').forEach(x => x.remove());
+  showBanner("info", esc(msg));
+}
 
 // ================= 設定 =================
 $("btnSettings").onclick = () => showView("vSet");

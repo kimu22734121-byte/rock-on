@@ -295,6 +295,33 @@ def get_config():
     return {"api_available": api_available()}
 
 
+@app.post("/api/jobs/{job_id}/meta")
+def update_meta(
+    job_id: str,
+    kind: str | None = Body(None),
+    title: str | None = Body(None),
+    instructions: str | None = Body(None),
+):
+    """録音の種類・タイトル・まとめ方の希望をあとから変える（間違えて「会議」にした場合など）。
+
+    変えたあとの要約は、「要約し直す」か claude.ai に貼り付ける方法で作り直す。
+    """
+    d = _job_dir(job_id)
+    updates: dict = {}
+    if kind is not None:
+        if kind not in KINDS:
+            raise HTTPException(400, "種類が正しくありません")
+        updates["kind"] = kind
+    if title is not None:
+        updates["title"] = title.strip()[:200]
+    if instructions is not None:
+        updates["instructions"] = instructions.strip()[:2000]
+    if not updates:
+        raise HTTPException(400, "変更する項目がありません")
+    meta = _write_meta(d, **updates)
+    return {k: meta.get(k) for k in ("kind", "title", "instructions")}
+
+
 @app.post("/api/jobs/{job_id}/retry")
 def retry_job(job_id: str):
     """文字起こしから最初にやり直す（文字起こしで失敗したときなど）。保存済みの録音を使う。"""

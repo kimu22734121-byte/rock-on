@@ -110,6 +110,19 @@
       <strong id="jobTitle"></strong>
       <span class="muted" id="jobStatus"></span>
     </div>
+    <details id="jobEdit" style="margin-top:8px">
+      <summary class="muted">種類・タイトルを変更</summary>
+      <div class="grid" style="margin-top:8px">
+        <div><label for="jKind">種類</label>
+          <select id="jKind">
+            <option value="meeting">会議</option><option value="lecture">講習会・セミナー</option>
+            <option value="conversation">会話</option><option value="other">その他</option>
+          </select></div>
+        <div><label for="jTitle">タイトル</label><input id="jTitle" type="text"></div>
+      </div>
+      <div id="jInstrField" style="margin-top:8px" hidden><label for="jInstr">まとめ方の希望（任意）</label><input id="jInstr" type="text"></div>
+      <div class="row" style="margin-top:8px"><button class="primary" id="jSave">変更を保存</button> <span class="muted" id="jMsg"></span></div>
+    </details>
     <progress id="jobProgress" max="1" value="0"></progress>
     <div class="row" style="margin-top:12px" id="jobActions" hidden>
       <a id="dlSummary" download><button>要約をダウンロード (.md)</button></a>
@@ -290,8 +303,15 @@ async function poll() {
   else loadList();
 }
 
+let editFilledFor = null;
 function showJob(job) {
   $("jobCard").hidden = false;
+  // 変更欄は記録を開いたときだけ埋める（入力中に上書きしない）
+  if (job.id && editFilledFor !== job.id) {
+    editFilledFor = job.id;
+    $("jKind").value = job.kind || "other"; $("jTitle").value = job.title || ""; $("jInstr").value = job.instructions || "";
+    $("jInstrField").hidden = $("jKind").value !== "other"; $("jMsg").textContent = ""; $("jobEdit").open = false;
+  }
   $("jobTitle").textContent = job.title || "（無題）";
   const cls = job.status === "error" ? "error" : "";
   $("jobStatus").innerHTML = `<span class="${cls}"></span>`;
@@ -329,6 +349,24 @@ function showJob(job) {
 }
 
 $("btnCopy").onclick = async () => { await navigator.clipboard.writeText(window._summary); $("btnCopy").textContent = "コピーしました"; setTimeout(() => $("btnCopy").textContent = "要約をコピー", 1500); };
+$("jKind").onchange = () => { $("jInstrField").hidden = $("jKind").value !== "other"; };
+$("jSave").onclick = async () => {
+  const kind = $("jKind").value;
+  const r = await fetch(`/api/jobs/${currentId}/meta`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, title: $("jTitle").value, instructions: kind === "other" ? $("jInstr").value : "" }),
+  });
+  if (!r.ok) return alert("変更できませんでした");
+  manualPrompt = null;   // 新しい種類の指示で、claude.ai 用の文章を作り直す
+  editFilledFor = null;
+  await poll();
+  $("jobEdit").open = true;
+  $("jMsg").textContent = window._summary
+    ? "保存しました。新しい種類で作り直すには「Claude API で要約」か「claude.ai で要約する」を使ってください。"
+    : "保存しました。";
+  if (window._summary) $("manualBox").open = true;
+  loadList();
+};
 $("btnRedo").onclick = async () => {
   const r = await fetch(`/api/jobs/${currentId}/retry`, { method: "POST" });
   if (!r.ok) return alert((await r.json()).detail || "やり直せませんでした");
