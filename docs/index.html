@@ -99,7 +99,10 @@
 <body>
 <header>
   <h1 id="hdr">録音</h1>
-  <span class="muted" id="net"></span>
+  <span style="display:flex;gap:10px;align-items:center">
+    <span class="muted" id="net"></span>
+    <button class="btn sm" id="btnSettings" aria-label="設定">⚙ 設定</button>
+  </span>
 </header>
 
 <!-- ================= 録音画面 ================= -->
@@ -230,6 +233,32 @@
   </div>
 </section>
 
+<!-- ================= 設定 ================= -->
+<section class="view hidden" id="vSet">
+  <div class="card">
+    <strong>まとめサーバーのアドレス</strong>
+    <p class="muted" style="margin:4px 0 10px" id="srvNote">
+      PC で動かしているまとめサーバーのアドレスを入れてください。Tailscale を使っている場合は
+      <b>https://PC名.xxxx.ts.net</b> の形です（PC で「tailscale serve status」を実行すると表示されます）。
+    </p>
+    <input type="text" id="srv" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://my-pc.tail1234.ts.net">
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn primary" id="srvSave">接続して保存</button>
+      <button class="btn" id="srvClear">この画面のサーバーを使う</button>
+    </div>
+    <p id="srvStatus" class="muted" style="margin:10px 0 0"></p>
+  </div>
+  <div class="card">
+    <strong>うまくつながらないとき</strong>
+    <ul class="muted" style="padding-left:1.2em;margin:6px 0 0">
+      <li>スマホの Tailscale がオンになっているか確認してください</li>
+      <li>PC でまとめサーバー（start.bat）が動いているか確認してください</li>
+      <li>アドレスは https:// で始まる必要があります</li>
+      <li>「ローカルネットワークへのアクセス」の確認が出たら「許可」を押してください</li>
+    </ul>
+  </div>
+</section>
+
 <nav class="tabs">
   <button class="on" data-v="vRec"><b>●</b>録音</button>
   <button data-v="vList"><b>☰</b>記録</button>
@@ -238,7 +267,22 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const API = "/api";
+// まとめサーバーの場所。空のときは、この画面を配っているサーバー（PC の /rec/）を使う。
+// GitHub Pages から開いたときは、設定画面で PC のアドレス（https://….ts.net）を保存する。
+let serverUrl = "";
+try { serverUrl = localStorage.getItem("serverUrl") || ""; } catch {}
+let API = (serverUrl || "") + "/api";
+function normalizeServer(u) {
+  u = (u || "").trim();
+  if (!u) return "";
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+  return u.replace(/\/+$/, "").replace(/\/(rec|api)$/i, "");
+}
+function setServer(u) {
+  serverUrl = u;
+  API = (serverUrl || "") + "/api";
+  try { u ? localStorage.setItem("serverUrl", u) : localStorage.removeItem("serverUrl"); } catch {}
+}
 const STATUS = { uploading:"受信中", queued:"順番待ち", transcribing:"文字起こし中", transcribed:"要約待ち", summarizing:"要約中", done:"完了", error:"エラー" };
 const pillClass = (st) => st === "done" ? "done" : st === "error" ? "error" : st === "transcribed" ? "wait" : "busy";
 const FINAL = ["done", "error", "transcribed"];
@@ -348,9 +392,15 @@ $("modeSeg").onclick = (e) => {
   try { localStorage.setItem("summaryMode", mode); } catch {}
   renderMode();
 };
+// サーバーにつながるか確かめる（つながれば true）
 async function loadConfig() {
-  try { apiAvailable = !!(await (await fetch(`${API}/config`)).json()).api_available; } catch {}
+  let ok = false;
+  try {
+    const r = await fetch(`${API}/config`, { cache: "no-store" });
+    if (r.ok) { apiAvailable = !!(await r.json()).api_available; ok = true; }
+  } catch {}
   renderMode();
+  return ok;
 }
 
 function pickMime() {
@@ -857,9 +907,10 @@ $("btnBack").onclick = () => showView("vList");
 
 // ================= 画面切り替え・通知 =================
 function showView(v) {
-  for (const id of ["vRec", "vList", "vDetail"]) $(id).classList.toggle("hidden", id !== v);
+  for (const id of ["vRec", "vList", "vDetail", "vSet"]) $(id).classList.toggle("hidden", id !== v);
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("on", b.dataset.v === v || (v === "vDetail" && b.dataset.v === "vList")));
-  $("hdr").textContent = v === "vRec" ? "録音" : "記録";
+  $("hdr").textContent = v === "vRec" ? "録音" : v === "vSet" ? "設定" : "記録";
+  if (v === "vSet") $("srv").value = serverUrl;
   if (v === "vList") refreshList();
   window.scrollTo(0, 0);
 }
@@ -875,11 +926,48 @@ function showBanner(type, html, key = "") {
 function clearBanner(key) { $("banners").querySelectorAll(`[data-key="${key}"]`).forEach(x => x.remove()); }
 function toast(msg) { showBanner("info", esc(msg)); }
 
+// ================= 設定 =================
+$("btnSettings").onclick = () => showView("vSet");
+$("srvSave").onclick = async () => {
+  const u = normalizeServer($("srv").value);
+  if (!u) return ($("srvStatus").textContent = "アドレスを入れてください。");
+  if (u.startsWith("http://") && !/^http:\/\/(localhost|127\.0\.0\.1)/.test(u) && location.protocol === "https:") {
+    return ($("srvStatus").textContent = "https:// で始まるアドレスにしてください（Tailscale の https://….ts.net など）。");
+  }
+  $("srvStatus").textContent = "接続を確認しています…";
+  const prev = serverUrl;
+  setServer(u);
+  if (await loadConfig()) {
+    $("srv").value = u;
+    $("srvStatus").textContent = "接続できました。保存しました。";
+    toast("まとめサーバーにつながりました");
+    retryPending();
+    setTimeout(() => showView("vRec"), 800);
+  } else {
+    setServer(prev);
+    $("srvStatus").textContent = "つながりませんでした。アドレス、PC のまとめサーバー、スマホの Tailscale を確認してください。";
+  }
+};
+$("srvClear").onclick = async () => {
+  setServer("");
+  $("srv").value = "";
+  $("srvStatus").textContent = (await loadConfig())
+    ? "この画面を配っているサーバーを使います。"
+    : "この画面からはサーバーが見つかりません（GitHub Pages から開いている場合は、アドレスの入力が必要です）。";
+};
+
 // ================= 起動時 =================
 (async () => {
   updateNet();
   renderMode();
-  loadConfig();
+  loadConfig().then(ok => {
+    if (ok || !navigator.onLine) return;
+    // サーバーが見つからない（GitHub Pages から初めて開いた、など）→ 設定画面へ
+    showView("vSet");
+    $("srvStatus").textContent = serverUrl
+      ? `保存されているサーバー（${serverUrl}）につながりません。PC とスマホの Tailscale がオンか確認してください。`
+      : "最初に、まとめサーバーのアドレスを設定してください。";
+  });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   navigator.storage?.persist?.(); // 端末が容量不足でもデータを消されにくくする
   const recs = await db.getRecs();

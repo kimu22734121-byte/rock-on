@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import anthropic
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -27,6 +29,26 @@ DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="録音まとめ")
+
+# GitHub Pages に置いた録音アプリ（別のアドレス）からの接続を許可する。
+# 許可するのはここに書いたサイトだけ（他のサイトからは録音や要約を読めない）。
+# config.env の ALLOWED_ORIGINS で変更できる（カンマ区切り）。
+ALLOWED_ORIGINS = [
+    o.strip().rstrip("/")
+    for o in os.getenv("ALLOWED_ORIGINS", "https://kimu22734121-byte.github.io").split(",")
+    if o.strip()
+]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+    # 公開サイト（GitHub Pages）から Tailscale 内の PC へ接続するときの、ブラウザの事前確認に応える
+    allow_private_network=True,
+)
+
 
 # 文字起こしは CPU/GPU を大きく使うので、同時に 1 件ずつ処理する
 _work_lock = threading.Lock()
@@ -318,4 +340,7 @@ def download_audio(job_id: str, part: int = 0):
     return FileResponse(d / parts[part])
 
 
+# スマホ用の録音アプリ（GitHub Pages と同じファイル）
+app.mount("/rec", StaticFiles(directory=ROOT / "docs", html=True), name="rec")
+# PC 用の画面
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

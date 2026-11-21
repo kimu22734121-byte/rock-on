@@ -5,7 +5,7 @@
 
 | アプリ | URL | 役割 |
 |---|---|---|
-| 📱 **録音アプリ**（スマホ用 PWA） | `/rec/` | 録音・「ここ重要」マーク・自動送信・まとめの閲覧 |
+| 📱 **録音アプリ**（スマホ用 PWA） | https://kimu22734121-byte.github.io/rock-on/ または PC の `/rec/` | 録音・「ここ重要」マーク・自動送信・まとめの閲覧 |
 | 🖥 **まとめサーバー**（PC で動かす） | `/` | 文字起こし（Whisper）・要約（Claude）・PC 用の画面 |
 
 ```
@@ -160,6 +160,29 @@ tailscale serve --bg 8000
 
 > ⚠ このアプリにはログイン機能がありません。`--host 0.0.0.0` やポート開放でインターネットに直接公開しないでください。
 
+## GitHub Pages から録音アプリを開く
+
+録音アプリは GitHub Pages にも置けます。決まったアドレス **https://kimu22734121-byte.github.io/rock-on/** で開けるようになります。
+文字起こしと要約は、これまでどおり PC のまとめサーバーで行います。GitHub Pages は画面のファイルを配るだけで、録音・文字起こし・要約・API キーは PC の外に出ません。
+
+**最初の 1 回だけ（GitHub の設定）**
+1. GitHub でこのリポジトリを開き、**Settings** →（左のメニュー）**Pages**
+2. **Build and deployment** の **Source** を **Deploy from a branch** にする
+3. **Branch** で、録音アプリのあるブランチ（`main` にまとめていれば `main`）と、フォルダ **`/docs`** を選んで **Save**
+4. 1〜2 分待つと、上に `https://kimu22734121-byte.github.io/rock-on/` が表示されます
+
+**スマホでの使い方**
+1. スマホの Tailscale をオンにして、`https://kimu22734121-byte.github.io/rock-on/` を開く
+2. 最初に「設定」画面が出るので、まとめサーバーのアドレス（`https://PC名.xxxx.ts.net`）を入れて「接続して保存」
+   - アドレスは、PC で `tailscale serve status` を実行すると表示されます
+   - Android の Chrome で「ローカルネットワーク上のデバイスへのアクセス」の確認が出たら **「許可」**
+3. ホーム画面に追加すると、普通のアプリのように使えます
+
+アドレスはあとから右上の「⚙ 設定」で変えられます。PC の `/rec/` から開いた場合は、設定なしでそのまま使えます。
+
+**しくみ**：まとめサーバーは、`ALLOWED_ORIGINS`（既定は `https://kimu22734121-byte.github.io`）のサイトからの接続だけを受け付けます。
+ほかのサイトから録音や要約を読み取ることはできません。リポジトリ名やユーザー名を変えた場合は、`config.env` に `ALLOWED_ORIGINS=https://新しいユーザー名.github.io` と書いてください。
+
 ## 設定（環境変数）
 
 | 変数 | 既定値 | 説明 |
@@ -168,6 +191,7 @@ tailscale serve --bg 8000
 | `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
 | `WHISPER_COMPUTE_TYPE` | `default` | GPU なら `float16`、CPU で軽くするなら `int8` |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | 要約に使う Claude モデル |
+| `ALLOWED_ORIGINS` | `https://kimu22734121-byte.github.io` | 録音アプリを置いたサイト（GitHub Pages）。カンマ区切りで複数可 |
 
 初回の文字起こし時に Whisper モデル（medium で約 1.5GB）が自動でダウンロードされます。
 
@@ -185,9 +209,9 @@ CPU で速くしたいときは `WHISPER_MODEL=small` と `WHISPER_COMPUTE_TYPE=
 ```
 app/main.py           まとめサーバー（受付・ジョブ管理・結果配信）
 app/transcribe.py     faster-whisper による文字起こし
-app/summarize.py      Claude API による要約（会議 / 講習会テンプレート、重要マーク反映）
+app/summarize.py      Claude API による要約（会議 / 講習会 / 会話 / その他、重要マーク反映）
 static/index.html     PC 用の画面（録音・アップロード・結果表示）
-static/rec/           スマホ用 録音アプリ（PWA）
+docs/                 スマホ用 録音アプリ（PWA）。GitHub Pages と PC の /rec/ の両方から配る
   index.html          画面と録音処理
   sw.js               オフライン起動用 Service Worker
   manifest.webmanifest, icon-*.png

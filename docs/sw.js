@@ -1,6 +1,6 @@
 // 録音アプリの画面をキャッシュし、電波がない場所でも起動・録音できるようにする。
-// API（/api/）は常にネットワークへ。
-const CACHE = "rec-v2";
+// API（/api/）とまとめサーバーのファイルは常にネットワークへ。
+const CACHE = "rec-v3";
 const SHELL = [
   "./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-192.png", "./icon-512.png",
   "https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js",
@@ -21,7 +21,9 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
+  if (e.request.method !== "GET" || url.pathname.includes("/api/")) return;
+  // まとめサーバー（別のアドレス）の録音や API はキャッシュしない
+  if (url.origin !== location.origin && url.origin !== "https://cdnjs.cloudflare.com") return;
   // 画面はネットワーク優先（更新をすぐ反映）、つながらなければキャッシュ
   e.respondWith(
     fetch(e.request)

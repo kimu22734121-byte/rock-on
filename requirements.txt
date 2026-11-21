@@ -1,5 +1,7 @@
 anthropic>=2.11.0
 fastapi>=0.110
+# CORS の allow_private_network（GitHub Pages から PC への接続）に必要
+starlette>=1.0
 uvicorn>=0.29
 python-multipart>=0.0.9
 faster-whisper>=1.2.1
