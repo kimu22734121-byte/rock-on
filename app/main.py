@@ -9,10 +9,12 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
+import time
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
@@ -266,15 +268,42 @@ async def create_job(
     return {"id": job_id}
 
 
+def _read_text(d: Path, name: str) -> str:
+    p = d / name
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def _snippet(text: str, term: str, width: int = 36) -> str:
+    """検索語の前後を少しだけ切り出す（一覧に「どこに出てきたか」を表示するため）。"""
+    i = text.lower().find(term.lower())
+    if i < 0:
+        return ""
+    start, end = max(0, i - width), min(len(text), i + len(term) + width)
+    piece = " ".join(text[start:end].split())
+    return ("…" if start > 0 else "") + piece + ("…" if end < len(text) else "")
+
+
 @app.get("/api/jobs")
-def list_jobs():
+def list_jobs(q: str = ""):
+    """記録の一覧。q を渡すと、タイトル・要約・文字起こしから探す（スペース区切りはすべてを含むもの）。"""
+    terms = q.split()[:5]
     jobs = []
     for d in DATA_DIR.iterdir():
-        if (d / "meta.json").exists():
-            m = _read_meta(d)
-            if m.get("status") == "uploading":
+        if not (d / "meta.json").exists():
+            continue
+        m = _read_meta(d)
+        if m.get("status") == "uploading":
+            continue
+        item = {k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration", "summary_mode")}
+        if terms:
+            title, summary, transcript = m.get("title") or "", _read_text(d, "summary.md"), _read_text(d, "transcript.txt")
+            haystack = f"{title}\n{m.get('notes') or ''}\n{summary}\n{transcript}".lower()
+            if not all(t.lower() in haystack for t in terms):
                 continue
-            jobs.append({k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration", "summary_mode")})
+            # タイトルに出てくるなら抜粋は不要。そうでなければ要約→文字起こしの順に抜粋する
+            if terms[0].lower() not in title.lower():
+                item["snippet"] = _snippet(summary, terms[0]) or _snippet(transcript, terms[0])
+        jobs.append(item)
     jobs.sort(key=lambda j: j.get("created_at") or "", reverse=True)
     return jobs
 
@@ -291,8 +320,80 @@ def get_job(job_id: str):
 
 @app.get("/api/config")
 def get_config():
-    """画面側で「自動要約」を選べるかどうかを判断するための情報。"""
-    return {"api_available": api_available()}
+    """画面側で「自動要約」を選べるか、録音ファイルを何日残すかなどの情報。"""
+    return {"api_available": api_available(), "audio_keep_days": AUDIO_KEEP_DAYS}
+
+
+BUSY = ("uploading", "queued", "transcribing", "summarizing")
+
+
+def _delete_audio(d: Path) -> int:
+    """録音ファイルだけを消す（要約と文字起こしは残す）。消したファイル数を返す。"""
+    meta = _read_meta(d)
+    names = meta.get("audio_parts") or ([meta["audio"]] if meta.get("audio") else [])
+    n = 0
+    for name in names:
+        p = d / name
+        if p.exists():
+            p.unlink()
+            n += 1
+    _write_meta(d, audio_parts=[], audio=None, audio_deleted=datetime.now().isoformat(timespec="seconds"))
+    return n
+
+
+@app.post("/api/jobs/{job_id}/delete")
+def delete_job(job_id: str, audio_only: bool = Body(False, embed=True)):
+    """記録を削除する。audio_only=true なら録音ファイルだけ消して、要約と文字起こしは残す。"""
+    d = _job_dir(job_id)
+    if _read_meta(d).get("status") in BUSY:
+        raise HTTPException(409, "いま処理中のため削除できません。終わってからもう一度お試しください")
+    if audio_only:
+        _delete_audio(d)
+        return {"ok": True, "deleted": "audio"}
+    shutil.rmtree(d)
+    return {"ok": True, "deleted": "all"}
+
+
+# ---- 古い録音ファイルの自動整理 ----
+# 要約（または文字起こし）ができてから AUDIO_KEEP_DAYS 日たった記録は、録音ファイルだけを消す。
+# 要約と文字起こしは残る。0 にすると自動では消さない。
+try:
+    AUDIO_KEEP_DAYS = max(0, int(os.getenv("AUDIO_KEEP_DAYS", "90")))
+except ValueError:
+    AUDIO_KEEP_DAYS = 90
+
+
+def cleanup_old_audio(now: datetime | None = None) -> int:
+    if AUDIO_KEEP_DAYS <= 0:
+        return 0
+    limit = (now or datetime.now()) - timedelta(days=AUDIO_KEEP_DAYS)
+    removed = 0
+    for d in DATA_DIR.iterdir():
+        try:
+            if not (d / "meta.json").exists():
+                continue
+            m = _read_meta(d)
+            # 失敗した記録（やり直しに録音が必要）や処理中のものは消さない
+            if m.get("status") not in ("done", "transcribed") or not (m.get("audio_parts") or m.get("audio")):
+                continue
+            if datetime.fromisoformat(m.get("created_at") or "9999-01-01") < limit:
+                removed += _delete_audio(d)
+        except Exception:  # noqa: BLE001  一つの記録の不具合で整理全体を止めない
+            traceback.print_exc()
+    if removed:
+        print(f"[自動整理] {AUDIO_KEEP_DAYS} 日より前の録音ファイルを {removed} 個削除しました（要約と文字起こしは残しています）")
+    return removed
+
+
+def _cleanup_loop() -> None:
+    while True:
+        cleanup_old_audio()
+        time.sleep(24 * 60 * 60)  # 1 日に 1 回
+
+
+@app.on_event("startup")
+def _start_cleanup() -> None:
+    threading.Thread(target=_cleanup_loop, daemon=True).start()
 
 
 @app.post("/api/jobs/{job_id}/meta")

@@ -25,6 +25,7 @@
   button { font:inherit; padding:10px 18px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button.rec { background:var(--rec); border-color:var(--rec); color:#fff; }
+  button.danger { color:var(--rec); }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .timer { font-variant-numeric: tabular-nums; font-size:1.6rem; font-weight:600; min-width: 7ch; }
   .dot { width:12px; height:12px; border-radius:50%; background:var(--rec); display:none; animation: blink 1s infinite; }
@@ -130,6 +131,8 @@
       <button id="btnCopy">要約をコピー</button>
       <button id="btnRedo" class="primary">やり直す（文字起こしから）</button>
       <button id="btnRetry">要約をやり直す</button>
+      <button id="btnDelAudio">録音ファイルだけ削除</button>
+      <button id="btnDelAll" class="danger">この記録を削除</button>
     </div>
     <audio id="player" controls hidden></audio>
     <details id="manualBox" hidden style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:10px 12px">
@@ -154,6 +157,9 @@
 
   <section class="card">
     <strong>これまでの記録</strong>
+    <div style="margin:8px 0">
+      <input id="q" type="search" placeholder="🔍 キーワードで探す（タイトル・要約・文字起こし）" autocomplete="off">
+    </div>
     <ul class="jobs" id="jobList"></ul>
   </section>
 </main>
@@ -331,7 +337,7 @@ function showJob(job) {
     if (manualPrompt === null) fetch(`/api/jobs/${job.id}/prompt`).then(r => r.ok ? r.text() : null).then(t => { manualPrompt = t; });
   }
   $("transcriptView").textContent = job.transcript || "文字起こしはまだありません";
-  const done = !!job.id && FINAL.includes(job.status);
+  const done = !!job.id && FINAL.includes(job.status);   // 処理中は操作ボタン（削除を含む）を出さない
   $("jobActions").hidden = !done;
   if (job.id) {
     $("dlSummary").href = `/api/jobs/${job.id}/summary.md`;
@@ -341,9 +347,11 @@ function showJob(job) {
     $("btnRetry").hidden = !job.transcript || !apiAvailable;
     $("btnRedo").hidden = job.status !== "error" || !(job.audio_parts || []).length;
     $("btnCopy").hidden = !job.summary;
+    const hasAudio = (job.audio_parts || []).length > 0;
     const src = `/api/jobs/${job.id}/audio`;
-    if (!$("player").src.endsWith(src)) $("player").src = src;
-    $("player").hidden = false;
+    if (hasAudio && !$("player").src.endsWith(src)) $("player").src = src;
+    $("player").hidden = !hasAudio;
+    $("btnDelAudio").hidden = !hasAudio;
   }
   window._summary = job.summary || "";
 }
@@ -400,10 +408,14 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
 });
 
 // ---------- 履歴 ----------
+let listSeq = 0;
 async function loadList() {
-  const jobs = await (await fetch("/api/jobs")).json();
+  const q = $("q").value.trim();
+  const seq = ++listSeq;
+  const jobs = await (await fetch("/api/jobs" + (q ? "?q=" + encodeURIComponent(q) : ""))).json();
+  if (seq !== listSeq) return;   // 入力中に古い結果で上書きしない
   const ul = $("jobList"); ul.innerHTML = "";
-  if (!jobs.length) { ul.innerHTML = `<li class="muted">まだありません</li>`; return; }
+  if (!jobs.length) { ul.innerHTML = `<li class="muted">${q ? "見つかりませんでした" : "まだありません"}</li>`; return; }
   for (const j of jobs) {
     const li = document.createElement("li");
     const name = document.createElement("span");
@@ -412,10 +424,34 @@ async function loadList() {
     meta.className = "muted";
     meta.textContent = `${(j.created_at || "").replace("T", " ")}  ${STATUS[j.status] || ""}`;
     li.append(name, meta);
+    if (j.snippet) {   // 検索語が出てきた場所の抜粋
+      const snip = document.createElement("div");
+      snip.className = "muted"; snip.style.cssText = "flex-basis:100%;font-size:.85rem";
+      snip.textContent = j.snippet;
+      li.style.flexWrap = "wrap";
+      li.appendChild(snip);
+    }
     li.onclick = () => { openJob(j.id); $("jobCard").scrollIntoView({ behavior: "smooth" }); };
     ul.appendChild(li);
   }
 }
+let qTimer = 0;
+$("q").oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(loadList, 350); };
+async function deleteJob(audioOnly) {
+  const msg = audioOnly
+    ? "録音ファイルだけを削除します。要約と文字起こしは残ります。よろしいですか？"
+    : "この記録（録音・文字起こし・要約）をすべて削除します。元に戻せません。よろしいですか？";
+  if (!confirm(msg)) return;
+  const r = await fetch(`/api/jobs/${currentId}/delete`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio_only: audioOnly }),
+  });
+  if (!r.ok) return alert((await r.json().catch(() => ({}))).detail || "削除できませんでした");
+  if (audioOnly) { $("player").removeAttribute("src"); openJob(currentId); }
+  else { $("jobCard").hidden = true; currentId = null; }
+  loadList();
+}
+$("btnDelAudio").onclick = () => deleteJob(true);
+$("btnDelAll").onclick = () => deleteJob(false);
 loadList();
 </script>
 </body>
