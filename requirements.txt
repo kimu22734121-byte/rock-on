@@ -4,6 +4,8 @@ fastapi>=0.110
 starlette>=1.0
 uvicorn>=0.29
 python-multipart>=0.0.9
+# 要約.html（記録フォルダで要約を見るためのページ）を作る
+markdown>=3.5
 faster-whisper>=1.2.1
 # av 19 以降は faster-whisper 1.2.1 と互換性がない（音声を読み込めない）
 av>=11,<19

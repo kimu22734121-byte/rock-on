@@ -23,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from .media import needs_conversion, to_m4a
+from .view import write_view
 from .summarize import KINDS, MODEL as DEFAULT_MODEL, MODELS, api_available, manual_prompt, summarize
 from .transcribe import transcribe
 
@@ -138,16 +140,44 @@ def _summary_kwargs(meta: dict) -> dict:
     )
 
 
+def _refresh_view(d: Path) -> None:
+    """記録フォルダの「要約.html」を、今の内容で作り直す（失敗しても処理は止めない）。"""
+    try:
+        if d.is_dir() and (d / "meta.json").exists():
+            write_view(d, _read_meta(d))
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+
+def _convert_parts(d: Path, parts: list[Path], original_names: list[str]) -> list[Path]:
+    """早送りできない録音（webm など）を m4a に変換する。変換できなければ元のファイルのまま使う。"""
+    result = []
+    for i, part in enumerate(parts):
+        name = original_names[i] if i < len(original_names) else ""
+        if part.exists() and needs_conversion(name, part):
+            try:
+                new = to_m4a(part)
+                part.unlink()
+                part = new
+            except Exception as e:  # noqa: BLE001
+                print(f"[変換] {part.name} を m4a に変換できませんでした（元の形式のまま使います）: {e}")
+        result.append(part)
+    _write_meta(d, audio_parts=[p.name for p in result])
+    return result
+
+
 def _summarize_job(d: Path, transcript: str) -> None:
     meta = _read_meta(d)
     if meta.get("summary_mode") == "manual":
         _write_meta(d, status="transcribed", message="文字起こし完了。claude.ai に貼り付けて要約してください", progress=1.0)
+        _refresh_view(d)
         return
     _write_meta(d, status="summarizing", message=f"Claude（{MODELS.get(meta.get('model') or DEFAULT_MODEL, {}).get('label', '')}）で要約中…", progress=1.0)
     model = meta.get("model") if meta.get("model") in MODELS else DEFAULT_MODEL
     summary = summarize(transcript, model=model, **_summary_kwargs(meta))
     (d / "summary.md").write_text(summary, encoding="utf-8")
     _write_meta(d, status="done", message="完了", summary_model=model)
+    _refresh_view(d)
 
 
 def _process(d: Path, parts: list[Path] | None) -> None:
@@ -160,10 +190,16 @@ def _process(d: Path, parts: list[Path] | None) -> None:
             _write_meta(d, status="queued", message="順番待ち中…")
             with _work_lock:
                 meta = _read_meta(d)
+                if meta.get("audio_original_names"):
+                    _write_meta(d, status="transcribing", message="録音を変換中…", progress=0.0)
+                    parts = _convert_parts(d, parts, meta.get("audio_original_names") or [])
+                    _write_meta(d, audio_original_names=[])
                 _write_meta(d, status="transcribing", message="文字起こし中…", progress=0.0)
                 texts: list[str] = []
                 offset = 0.0
+                offsets: list[float] = []
                 for i, part in enumerate(parts):
+                    offsets.append(round(offset, 2))
                     if i:
                         texts.append(f"[{_fmt(offset)}] （録音が一時中断され、ここから再開）")
                     text, duration = transcribe(
@@ -178,13 +214,14 @@ def _process(d: Path, parts: list[Path] | None) -> None:
                     offset += duration
                 transcript = "\n".join(texts)
                 (d / "transcript.txt").write_text(transcript, encoding="utf-8")
-                _write_meta(d, duration=round(offset, 1))
+                _write_meta(d, duration=round(offset, 1), part_offsets=offsets)
         else:
             transcript = (d / "transcript.txt").read_text(encoding="utf-8")
         _summarize_job(d, transcript)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         _write_meta(d, status="error", message=_error_message(e))
+        _refresh_view(d)
 
 
 def _parse_marks(raw: str) -> list[dict]:
@@ -260,6 +297,7 @@ async def create_job(
         instructions=instructions.strip()[:2000],
         language=language,
         marks=_parse_marks(marks),
+        audio_original_names=[up.filename or "" for up in audio],
         # API キーがなければ自動要約はできないので手動にする
         summary_mode="auto" if summary_mode == "auto" and api_available() else "manual",
         model=model if model in MODELS else DEFAULT_MODEL,
@@ -399,6 +437,7 @@ def delete_job(
         _write_meta(d, status="transcribed", message="要約を削除しました。要約を作り直せます")
     elif not has_sum and not has_tx:
         _write_meta(d, status="error", message="文字起こしと要約を削除しました。「やり直す（文字起こしから）」で作り直せます")
+    _refresh_view(d)
     return {"ok": True, "deleted": parts}
 
 
@@ -426,6 +465,7 @@ def cleanup_old_audio(now: datetime | None = None) -> int:
                 continue
             if datetime.fromisoformat(m.get("created_at") or "9999-01-01") < limit:
                 removed += _delete_audio(d)
+                _refresh_view(d)
         except Exception:  # noqa: BLE001  一つの記録の不具合で整理全体を止めない
             traceback.print_exc()
     if removed:
@@ -439,9 +479,30 @@ def _cleanup_loop() -> None:
         time.sleep(24 * 60 * 60)  # 1 日に 1 回
 
 
+def _upgrade_old_records() -> None:
+    """以前の版で保存した記録を、今の形にそろえる（webm → m4a、要約.html を作る）。"""
+    for d in sorted(DATA_DIR.iterdir()):
+        try:
+            if not (d / "meta.json").exists():
+                continue
+            meta = _read_meta(d)
+            if meta.get("status") in BUSY:
+                continue
+            parts = [d / p for p in (meta.get("audio_parts") or [])]
+            if any(p.exists() and needs_conversion("", p) for p in parts):
+                with _work_lock:
+                    print(f"[変換] {d.name} の録音を早送りできる形式（m4a）に変換しています…")
+                    _convert_parts(d, parts, [])
+            if not (d / "要約.html").exists() or any(p.exists() for p in parts if p.suffix == ".m4a"):
+                _refresh_view(d)
+        except Exception:  # noqa: BLE001  一つの記録の不具合で全体を止めない
+            traceback.print_exc()
+
+
 @app.on_event("startup")
 def _start_cleanup() -> None:
     threading.Thread(target=_cleanup_loop, daemon=True).start()
+    threading.Thread(target=_upgrade_old_records, daemon=True).start()
 
 
 @app.post("/api/jobs/{job_id}/meta")
@@ -468,6 +529,7 @@ def update_meta(
     if not updates:
         raise HTTPException(400, "変更する項目がありません")
     meta = _write_meta(d, **updates)
+    _refresh_view(d)
     return {k: meta.get(k) for k in ("kind", "title", "instructions")}
 
 
@@ -521,6 +583,7 @@ def save_manual_summary(job_id: str, summary: str = Body(..., embed=True)):
         raise HTTPException(400, "要約が空です")
     (d / "summary.md").write_text(summary + "\n", encoding="utf-8")
     _write_meta(d, status="done", message="完了", summary_mode="manual", summary_model="claude.ai")
+    _refresh_view(d)
     return {"ok": True}
 
 
