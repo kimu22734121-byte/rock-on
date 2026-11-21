@@ -9,6 +9,8 @@ from typing import Callable
 
 from faster_whisper import WhisperModel
 
+from .storage import MODELS_DIR
+
 # 精度と速度のバランス。GPU があるなら "large-v3"、軽くしたいなら "small"。
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "medium")
 # 既定は CPU。NVIDIA の GPU があっても、GPU 用の部品（CUDA / cuDNN）が入っていない PC が多く、
@@ -28,6 +30,11 @@ def _is_gpu_error(e: Exception) -> bool:
     return any(k in text for k in ("cuda", "cudnn", "cublas", "nvidia", "gpu"))
 
 
+def _root() -> str | None:
+    """文字起こしモデルの保存先（D:\\Server\\rock-on\\models など）。None なら標準の場所。"""
+    return str(MODELS_DIR) if MODELS_DIR else None
+
+
 def _get_model() -> WhisperModel:
     """モデルは重いので初回だけ読み込み、以後は使い回す。"""
     global _model, _force_cpu
@@ -35,13 +42,13 @@ def _get_model() -> WhisperModel:
         if _model is None:
             device = "cpu" if _force_cpu else DEVICE
             try:
-                _model = WhisperModel(MODEL_SIZE, device=device, compute_type=COMPUTE_TYPE)
+                _model = WhisperModel(MODEL_SIZE, device=device, compute_type=COMPUTE_TYPE, download_root=_root())
             except Exception as e:  # noqa: BLE001
                 if device == "cpu" or not _is_gpu_error(e):
                     raise
                 print(f"[文字起こし] GPU が使えないため CPU に切り替えます: {e}")
                 _force_cpu = True
-                _model = WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
+                _model = WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE, download_root=_root())
         return _model
 
 

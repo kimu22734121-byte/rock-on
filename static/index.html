@@ -50,6 +50,7 @@
 <main>
   <h1>録音まとめ</h1>
   <p class="muted">📱 スマホ用の録音アプリは <a href="/rec/">/rec/</a> にあります（スマホのブラウザで開いてホーム画面に追加）。</p>
+  <p class="muted" id="storageInfo"></p>
 
   <section class="card">
     <div class="grid">
@@ -184,7 +185,11 @@ function renderMode() {
 $("mode") && ($("mode").onchange = () => { try { localStorage.setItem("summaryMode", $("mode").value); } catch {} renderMode(); });
 (async () => {
   try { $("mode").value = localStorage.getItem("summaryMode") || "auto"; } catch {}
-  try { apiAvailable = !!(await (await fetch("/api/config")).json()).api_available; } catch {}
+  try {
+    const c = await (await fetch("/api/config")).json();
+    apiAvailable = !!c.api_available;
+    if (c.storage) $("storageInfo").textContent = `💾 保存先: ${c.storage}`;
+  } catch {}
   renderMode();
 })();
 

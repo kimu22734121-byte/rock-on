@@ -26,9 +26,10 @@ from fastapi.staticfiles import StaticFiles
 from .summarize import KINDS, api_available, manual_prompt, summarize
 from .transcribe import transcribe
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
+from .storage import DATA_DIR, ROOT, SERVER_NAME, STORAGE_DIR, prepare as _prepare_storage
+
+# 保存先（Windows で D ドライブがあれば D:\Server\rock-on\data）を用意し、以前の記録を移す
+_prepare_storage()
 
 app = FastAPI(title="録音まとめ")
 
@@ -321,7 +322,12 @@ def get_job(job_id: str):
 @app.get("/api/config")
 def get_config():
     """画面側で「自動要約」を選べるか、録音ファイルを何日残すかなどの情報。"""
-    return {"api_available": api_available(), "audio_keep_days": AUDIO_KEEP_DAYS}
+    return {
+        "api_available": api_available(),
+        "audio_keep_days": AUDIO_KEEP_DAYS,
+        "server_name": SERVER_NAME,
+        "storage": str(STORAGE_DIR or DATA_DIR),
+    }
 
 
 BUSY = ("uploading", "queued", "transcribing", "summarizing")
@@ -355,12 +361,12 @@ def delete_job(job_id: str, audio_only: bool = Body(False, embed=True)):
 
 
 # ---- 古い録音ファイルの自動整理 ----
-# 要約（または文字起こし）ができてから AUDIO_KEEP_DAYS 日たった記録は、録音ファイルだけを消す。
-# 要約と文字起こしは残る。0 にすると自動では消さない。
+# AUDIO_KEEP_DAYS を設定すると、要約（または文字起こし）ができてからその日数たった記録の
+# 録音ファイルだけを消す（要約と文字起こしは残る）。既定の 0 は「期限なし（自動では消さない）」。
 try:
-    AUDIO_KEEP_DAYS = max(0, int(os.getenv("AUDIO_KEEP_DAYS", "1095")))  # 既定は 3 年
+    AUDIO_KEEP_DAYS = max(0, int(os.getenv("AUDIO_KEEP_DAYS", "0")))
 except ValueError:
-    AUDIO_KEEP_DAYS = 1095
+    AUDIO_KEEP_DAYS = 0
 
 
 def cleanup_old_audio(now: datetime | None = None) -> int:
