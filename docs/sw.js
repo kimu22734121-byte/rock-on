@@ -1,6 +1,6 @@
 // 録音アプリの画面をキャッシュし、電波がない場所でも起動・録音できるようにする。
 // API（/api/）とまとめサーバーのファイルは常にネットワークへ。
-const CACHE = "rec-v3";
+const CACHE = "rec-v4";
 const SHELL = [
   "./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-192.png", "./icon-512.png",
   "https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js",
