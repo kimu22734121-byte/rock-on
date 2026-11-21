@@ -358,9 +358,9 @@ def delete_job(job_id: str, audio_only: bool = Body(False, embed=True)):
 # 要約（または文字起こし）ができてから AUDIO_KEEP_DAYS 日たった記録は、録音ファイルだけを消す。
 # 要約と文字起こしは残る。0 にすると自動では消さない。
 try:
-    AUDIO_KEEP_DAYS = max(0, int(os.getenv("AUDIO_KEEP_DAYS", "90")))
+    AUDIO_KEEP_DAYS = max(0, int(os.getenv("AUDIO_KEEP_DAYS", "1095")))  # 既定は 3 年
 except ValueError:
-    AUDIO_KEEP_DAYS = 90
+    AUDIO_KEEP_DAYS = 1095
 
 
 def cleanup_old_audio(now: datetime | None = None) -> int:

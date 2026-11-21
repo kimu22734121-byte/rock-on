@@ -409,6 +409,8 @@ renderKind();
 // 要約の方法: auto = Claude API で自動 / manual = claude.ai に貼り付け
 let apiAvailable = false;
 let apiKeepDays = 0;   // サーバーが録音ファイルを残す日数（0 = 自動では消さない）
+// 1095 日 → 「3 年」、180 日 → 「180 日」のように読みやすくする
+const keepText = (d) => d % 365 === 0 ? `${d / 365} 年` : `${d} 日`;
 let mode = (() => { try { return localStorage.getItem("summaryMode") || "auto"; } catch { return "auto"; } })();
 // 選んだ方法は保存しておき、API キーがないときだけ一時的に手動にする
 const effectiveMode = () => apiAvailable ? mode : "manual";
@@ -917,7 +919,7 @@ async function pollJob() {
   $("delAudio").classList.toggle("hidden", !parts.length);
   $("delAudio").disabled = $("delAll").disabled = busy;
   $("delNote").textContent = busy ? "処理中は削除できません。"
-    : (apiKeepDays > 0 && parts.length ? `録音ファイルは、録音から ${apiKeepDays} 日たつと自動で削除されます（要約と文字起こしは残ります）。` : "");
+    : (apiKeepDays > 0 && parts.length ? `録音ファイルは、録音から ${keepText(apiKeepDays)}たつと自動で削除されます（要約と文字起こしは残ります）。` : "");
   if (!$("dAudio").childElementCount && parts.length) {
     $("dAudio").innerHTML = parts.map((_, i) =>
       `${parts.length > 1 ? `<div class="muted">パート ${i + 1}</div>` : ""}<audio controls preload="none" src="${API}/jobs/${j.id}/audio/${i}"></audio>`).join("");
