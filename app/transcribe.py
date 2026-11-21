@@ -11,8 +11,11 @@ from faster_whisper import WhisperModel
 
 # 精度と速度のバランス。GPU があるなら "large-v3"、軽くしたいなら "small"。
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "medium")
-DEVICE = os.getenv("WHISPER_DEVICE", "auto")  # "cpu" / "cuda" / "auto"
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "default")
+# 既定は CPU。NVIDIA の GPU があっても、GPU 用の部品（CUDA / cuDNN）が入っていない PC が多く、
+# そのままだと「cublas64_12.dll が見つからない」で止まるため。GPU を使うなら config.env に WHISPER_DEVICE=cuda。
+DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" / "cuda" / "auto"
+# CPU では int8 が速い（精度の差はわずか）。GPU では元の精度のまま。
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8" if DEVICE == "cpu" else "default")
 
 _model: WhisperModel | None = None
 _model_lock = threading.Lock()

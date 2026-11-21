@@ -188,15 +188,15 @@ tailscale serve --bg 8000
 | 変数 | 既定値 | 説明 |
 |---|---|---|
 | `WHISPER_MODEL` | `medium` | `small`（軽い）/ `medium` / `large-v3`（高精度、GPU 推奨） |
-| `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
-| `WHISPER_COMPUTE_TYPE` | `default` | GPU なら `float16`、CPU で軽くするなら `int8` |
+| `WHISPER_DEVICE` | `cpu` | `cpu` / `cuda` / `auto`（GPU を使うには CUDA と cuDNN のインストールが必要） |
+| `WHISPER_COMPUTE_TYPE` | CPU は `int8`、GPU は `default` | GPU なら `float16` など |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | 要約に使う Claude モデル |
 | `ALLOWED_ORIGINS` | `https://kimu22734121-byte.github.io` | 録音アプリを置いたサイト（GitHub Pages）。カンマ区切りで複数可 |
 
 初回の文字起こし時に Whisper モデル（medium で約 1.5GB）が自動でダウンロードされます。
 
 **処理時間の目安（1 時間の録音）**：CPU + medium で 30〜60 分ほど、GPU + large-v3 で数分。
-CPU で速くしたいときは `WHISPER_MODEL=small` と `WHISPER_COMPUTE_TYPE=int8` を試してください。
+CPU でもっと速くしたいときは `WHISPER_MODEL=small` を試してください（精度は少し下がります）。
 
 ## 使い方のコツ
 
@@ -216,7 +216,7 @@ CPU で速くしたいときは `WHISPER_MODEL=small` と `WHISPER_COMPUTE_TYPE=
 | PC のメモリが足りない | `config.env` に `WHISPER_MODEL=small` と書き、`start.bat` を起動し直して「やり直す」 |
 | 録音ファイルを読み込めない | 録音が短すぎるか、ファイルが壊れています。録り直してください |
 
-NVIDIA の GPU がある PC で GPU 用の部品が足りない場合は、自動で CPU に切り替えて文字起こしを続けます。
+文字起こしは既定で CPU を使います。`WHISPER_DEVICE=cuda` で GPU を使う設定にしていて、GPU 用の部品（`cublas64_12.dll` など）が足りない場合も、自動で CPU に切り替えて続けます。
 
 ## 構成
 
