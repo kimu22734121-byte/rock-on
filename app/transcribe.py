@@ -16,15 +16,37 @@ COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "default")
 
 _model: WhisperModel | None = None
 _model_lock = threading.Lock()
+_force_cpu = False  # GPU で失敗したら、以後は CPU で動かす
+
+
+def _is_gpu_error(e: Exception) -> bool:
+    """NVIDIA の GPU 用部品（CUDA / cuDNN / cuBLAS）が足りないときのエラーか。"""
+    text = str(e).lower()
+    return any(k in text for k in ("cuda", "cudnn", "cublas", "nvidia", "gpu"))
 
 
 def _get_model() -> WhisperModel:
     """モデルは重いので初回だけ読み込み、以後は使い回す。"""
-    global _model
+    global _model, _force_cpu
     with _model_lock:
         if _model is None:
-            _model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+            device = "cpu" if _force_cpu else DEVICE
+            try:
+                _model = WhisperModel(MODEL_SIZE, device=device, compute_type=COMPUTE_TYPE)
+            except Exception as e:  # noqa: BLE001
+                if device == "cpu" or not _is_gpu_error(e):
+                    raise
+                print(f"[文字起こし] GPU が使えないため CPU に切り替えます: {e}")
+                _force_cpu = True
+                _model = WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
         return _model
+
+
+def _switch_to_cpu() -> None:
+    global _model, _force_cpu
+    with _model_lock:
+        _force_cpu = True
+        _model = None
 
 
 def _fmt(seconds: float) -> str:
@@ -32,7 +54,19 @@ def _fmt(seconds: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def transcribe(
+def transcribe(*args, **kwargs) -> tuple[str, float]:
+    """文字起こし。GPU の部品が足りずに途中で失敗したら、CPU に切り替えてもう一度行う。"""
+    try:
+        return _transcribe(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        if _force_cpu or DEVICE == "cpu" or not _is_gpu_error(e):
+            raise
+        print(f"[文字起こし] GPU で失敗したため CPU でやり直します: {e}")
+        _switch_to_cpu()
+        return _transcribe(*args, **kwargs)
+
+
+def _transcribe(
     audio_path: Path,
     language: str = "ja",
     hint: str = "",

@@ -115,6 +115,7 @@
       <a id="dlSummary" download><button>要約をダウンロード (.md)</button></a>
       <a id="dlTranscript" download><button>文字起こしをダウンロード (.txt)</button></a>
       <button id="btnCopy">要約をコピー</button>
+      <button id="btnRedo" class="primary">やり直す（文字起こしから）</button>
       <button id="btnRetry">要約をやり直す</button>
     </div>
     <audio id="player" controls hidden></audio>
@@ -318,6 +319,7 @@ function showJob(job) {
     $("dlSummary").hidden = !job.summary;
     $("dlTranscript").hidden = !job.transcript;
     $("btnRetry").hidden = !job.transcript || !apiAvailable;
+    $("btnRedo").hidden = job.status !== "error" || !(job.audio_parts || []).length;
     $("btnCopy").hidden = !job.summary;
     const src = `/api/jobs/${job.id}/audio`;
     if (!$("player").src.endsWith(src)) $("player").src = src;
@@ -327,6 +329,11 @@ function showJob(job) {
 }
 
 $("btnCopy").onclick = async () => { await navigator.clipboard.writeText(window._summary); $("btnCopy").textContent = "コピーしました"; setTimeout(() => $("btnCopy").textContent = "要約をコピー", 1500); };
+$("btnRedo").onclick = async () => {
+  const r = await fetch(`/api/jobs/${currentId}/retry`, { method: "POST" });
+  if (!r.ok) return alert((await r.json()).detail || "やり直せませんでした");
+  openJob(currentId);
+};
 $("btnRetry").onclick = async () => {
   const r = await fetch(`/api/jobs/${currentId}/resummarize`, { method: "POST" });
   if (!r.ok) return alert((await r.json()).detail || "失敗しました");

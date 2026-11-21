@@ -105,7 +105,24 @@ def _error_message(e: Exception) -> str:
         return "Claude API に接続できませんでした。ネットワークを確認してください。"
     if isinstance(e, anthropic.APIStatusError):
         return f"Claude API エラー ({e.status_code}): {e.message}"
-    return f"処理に失敗しました: {e}"
+
+    # ここから先は文字起こし（PC 側）のエラー。原因ごとに、次にすることを案内する。
+    detail = f"{type(e).__name__}: {e}"[:300]
+    text = detail.lower()
+    if isinstance(e, MemoryError) or "out of memory" in text or "bad_alloc" in text:
+        hint = ("PC のメモリが足りませんでした。config.env に WHISPER_MODEL=small と書いて start.bat を起動し直し、"
+                "「やり直す」を押してください。")
+    elif any(k in text for k in ("huggingface", "hf_hub", "localentrynotfound", "connection", "timed out", "proxy", "ssl")):
+        hint = ("文字起こしモデルのダウンロードに失敗しました（初回だけ約 1.5GB をダウンロードします）。"
+                "PC のインターネット接続を確認して「やり直す」を押してください。")
+    elif any(k in text for k in ("invaliddata", "invalid data", "could not find codec", "no audio", "audio stream",
+                                  "end of file", "moov atom")):
+        hint = "録音ファイルを読み込めませんでした。録音が短すぎるか、ファイルが壊れている可能性があります。"
+    elif isinstance(e, (FileNotFoundError, PermissionError)):
+        hint = "録音ファイルが見つからないか、開けませんでした。data フォルダを移動・削除していないか確認してください。"
+    else:
+        hint = "「やり直す」を押してみてください。同じエラーが続く場合は、この文章を Claude に伝えてください。"
+    return f"処理に失敗しました。{hint}（詳細: {detail}）"
 
 
 def _summary_kwargs(meta: dict) -> dict:
@@ -276,6 +293,21 @@ def get_job(job_id: str):
 def get_config():
     """画面側で「自動要約」を選べるかどうかを判断するための情報。"""
     return {"api_available": api_available()}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    """文字起こしから最初にやり直す（文字起こしで失敗したときなど）。保存済みの録音を使う。"""
+    d = _job_dir(job_id)
+    meta = _read_meta(d)
+    if meta.get("status") in ("queued", "transcribing", "summarizing"):
+        raise HTTPException(409, "いま処理中です。終わるまでお待ちください")
+    parts = [d / p for p in meta.get("audio_parts") or ([meta["audio"]] if meta.get("audio") else [])]
+    if not parts or not all(p.exists() for p in parts):
+        raise HTTPException(400, "録音ファイルが見つかりません")
+    _write_meta(d, status="queued", message="やり直しを受け付けました", progress=0.0)
+    threading.Thread(target=_process, args=(d, parts), daemon=True).start()
+    return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/resummarize")

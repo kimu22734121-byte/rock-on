@@ -857,7 +857,15 @@ async function pollJob() {
   if (j.summary) acts.push(`<button class="btn sm" id="aCopy">要約をコピー</button>`, `<button class="btn sm" id="aShare">共有</button>`);
   if (j.transcript && FINAL.includes(j.status) && apiAvailable)
     acts.push(`<button class="btn sm" id="aRetry">${j.summary ? "Claude API で要約し直す" : "Claude API で自動要約"}</button>`);
+  if (j.status === "error" && (j.audio_parts || []).length)
+    acts.unshift(`<button class="btn sm primary" id="aRedo">やり直す（文字起こしから）</button>`);
   $("dActions").innerHTML = acts.join("");
+  $("aRedo") && ($("aRedo").onclick = async () => {
+    const r = await fetch(`${API}/jobs/${j.id}/retry`, { method: "POST" });
+    if (!r.ok) return toast((await r.json()).detail || "やり直せませんでした");
+    toast("やり直しています。終わるまでこの画面で待つか、あとで「記録」から開いてください");
+    pollJob();
+  });
   $("aCopy") && ($("aCopy").onclick = async () => { await navigator.clipboard.writeText(j.summary); toast("コピーしました"); });
   $("aShare") && ($("aShare").onclick = async () => {
     if (navigator.share) { try { await navigator.share({ title: j.title || "要約", text: j.summary }); } catch {} }
