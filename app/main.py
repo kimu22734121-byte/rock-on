@@ -347,17 +347,54 @@ def _delete_audio(d: Path) -> int:
     return n
 
 
+DELETABLE = ("audio", "transcript", "summary")
+
+
 @app.post("/api/jobs/{job_id}/delete")
-def delete_job(job_id: str, audio_only: bool = Body(False, embed=True)):
-    """記録を削除する。audio_only=true なら録音ファイルだけ消して、要約と文字起こしは残す。"""
+def delete_job(
+    job_id: str,
+    parts: list[str] | None = Body(None, embed=True),
+    audio_only: bool = Body(False, embed=True),
+):
+    """記録を削除する。
+
+    parts を渡すと、その部分だけを消す（"audio" 録音 / "transcript" 文字起こし / "summary" 要約）。
+    parts を渡さないと、記録をすべて消す。audio_only=true は parts=["audio"] と同じ（以前の版との互換）。
+    消した結果なにも残らなければ、記録ごと消す。
+    """
     d = _job_dir(job_id)
-    if _read_meta(d).get("status") in BUSY:
+    meta = _read_meta(d)
+    if meta.get("status") in BUSY:
         raise HTTPException(409, "いま処理中のため削除できません。終わってからもう一度お試しください")
-    if audio_only:
+    if audio_only and parts is None:
+        parts = ["audio"]
+    if parts is None:
+        shutil.rmtree(d)
+        return {"ok": True, "deleted": "all"}
+    parts = [p for p in parts if p in DELETABLE]
+    if not parts:
+        raise HTTPException(400, "削除するものを選んでください")
+
+    now = datetime.now().isoformat(timespec="seconds")
+    if "audio" in parts:
         _delete_audio(d)
-        return {"ok": True, "deleted": "audio"}
-    shutil.rmtree(d)
-    return {"ok": True, "deleted": "all"}
+    for part, name in (("transcript", "transcript.txt"), ("summary", "summary.md")):
+        if part in parts and (d / name).exists():
+            (d / name).unlink()
+            _write_meta(d, **{f"{part}_deleted": now})
+
+    has_audio = bool(_read_meta(d).get("audio_parts"))
+    has_tx, has_sum = (d / "transcript.txt").exists(), (d / "summary.md").exists()
+    if not (has_audio or has_tx or has_sum):
+        shutil.rmtree(d)  # 何も残らないなら記録ごと消す
+        return {"ok": True, "deleted": "all"}
+
+    # 残ったものに合わせて状態を直す（次にできる操作がボタンとして出るように）
+    if not has_sum and has_tx:
+        _write_meta(d, status="transcribed", message="要約を削除しました。要約を作り直せます")
+    elif not has_sum and not has_tx:
+        _write_meta(d, status="error", message="文字起こしと要約を削除しました。「やり直す（文字起こしから）」で作り直せます")
+    return {"ok": True, "deleted": parts}
 
 
 # ---- 古い録音ファイルの自動整理 ----

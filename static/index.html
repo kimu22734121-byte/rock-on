@@ -12,6 +12,7 @@
     :root { --bg:#14171c; --card:#1d2129; --text:#e6e9ee; --sub:#9aa5b4; --line:#2e3440; --accent:#60a5fa; --rec:#f87171; }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; line-height:1.6; }
   main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 1.5rem; margin: 0 0 16px; }
@@ -132,8 +133,16 @@
       <button id="btnCopy">要約をコピー</button>
       <button id="btnRedo" class="primary">やり直す（文字起こしから）</button>
       <button id="btnRetry">要約をやり直す</button>
-      <button id="btnDelAudio">録音ファイルだけ削除</button>
-      <button id="btnDelAll" class="danger">この記録を削除</button>
+      <details id="delBox">
+        <summary class="muted" style="cursor:pointer;padding:8px 0">選んで削除…</summary>
+        <span id="delPick">
+          <label id="pkAudio"><input type="checkbox" value="audio"> 録音ファイル</label>
+          <label id="pkTx"><input type="checkbox" value="transcript"> 文字起こし</label>
+          <label id="pkSum"><input type="checkbox" value="summary"> 要約</label>
+        </span>
+        <button id="btnDelSel">選んだものを削除</button>
+      </details>
+      <button id="btnDelAll" class="danger">この記録をすべて削除</button>
     </div>
     <audio id="player" controls hidden></audio>
     <details id="manualBox" hidden style="margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:10px 12px">
@@ -350,13 +359,17 @@ function showJob(job) {
     $("dlSummary").hidden = !job.summary;
     $("dlTranscript").hidden = !job.transcript;
     $("btnRetry").hidden = !job.transcript || !apiAvailable;
-    $("btnRedo").hidden = job.status !== "error" || !(job.audio_parts || []).length;
+    // 失敗したとき、または文字起こしを削除したあと（録音が残っていれば）作り直せる
+    $("btnRedo").hidden = !(job.status === "error" || !job.transcript) || !(job.audio_parts || []).length;
     $("btnCopy").hidden = !job.summary;
     const hasAudio = (job.audio_parts || []).length > 0;
     const src = `/api/jobs/${job.id}/audio`;
     if (hasAudio && !$("player").src.endsWith(src)) $("player").src = src;
     $("player").hidden = !hasAudio;
-    $("btnDelAudio").hidden = !hasAudio;
+    // 選んで削除: 残っているものだけ選べるようにする
+    const have = { audio: hasAudio, transcript: !!job.transcript, summary: !!job.summary };
+    $("pkAudio").hidden = !have.audio; $("pkTx").hidden = !have.transcript; $("pkSum").hidden = !have.summary;
+    $("delPick").querySelectorAll("input").forEach(x => { if (!have[x.value]) x.checked = false; });
   }
   window._summary = job.summary || "";
 }
@@ -442,21 +455,39 @@ async function loadList() {
 }
 let qTimer = 0;
 $("q").oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(loadList, 350); };
-async function deleteJob(audioOnly) {
-  const msg = audioOnly
-    ? "録音ファイルだけを削除します。要約と文字起こしは残ります。よろしいですか？"
-    : "この記録（録音・文字起こし・要約）をすべて削除します。元に戻せません。よろしいですか？";
+const PART_NAMES = { audio: "録音ファイル", transcript: "文字起こし", summary: "要約" };
+// parts を渡すとその部分だけ、渡さないと記録をすべて削除する
+async function deleteJob(parts) {
+  let msg;
+  if (!parts) msg = "この記録（録音・文字起こし・要約）をすべて削除します。元に戻せません。よろしいですか？";
+  else {
+    msg = `${parts.map(k => PART_NAMES[k]).join("・")}を削除します。元に戻せません。`;
+    const visible = [...$("delPick").querySelectorAll("label")].filter(l => !l.hidden).length;
+    if (parts.length === visible) msg += "\nすべて選んでいるので、記録ごと削除されます。";
+    else if (parts.includes("transcript") && (parts.includes("audio") || $("pkAudio").hidden))
+      msg += "\n録音がないため、文字起こしと要約は二度と作り直せなくなります。";
+    msg += "\nよろしいですか？";
+  }
   if (!confirm(msg)) return;
   const r = await fetch(`/api/jobs/${currentId}/delete`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio_only: audioOnly }),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parts ? { parts } : {}),
   });
   if (!r.ok) return alert((await r.json().catch(() => ({}))).detail || "削除できませんでした");
-  if (audioOnly) { $("player").removeAttribute("src"); openJob(currentId); }
-  else { $("jobCard").hidden = true; currentId = null; }
+  const res = await r.json();
+  if (res.deleted === "all") { $("jobCard").hidden = true; currentId = null; }
+  else {
+    if (parts.includes("audio")) $("player").removeAttribute("src");
+    $("delPick").querySelectorAll("input").forEach(x => { x.checked = false; });
+    openJob(currentId);
+  }
   loadList();
 }
-$("btnDelAudio").onclick = () => deleteJob(true);
-$("btnDelAll").onclick = () => deleteJob(false);
+$("btnDelSel").onclick = () => {
+  const parts = [...$("delPick").querySelectorAll("label:not([hidden]) input:checked")].map(x => x.value);
+  if (!parts.length) return alert("削除するものを選んでください");
+  deleteJob(parts);
+};
+$("btnDelAll").onclick = () => deleteJob(null);
 loadList();
 </script>
 </body>

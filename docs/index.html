@@ -82,6 +82,8 @@
   .snip { font-size:.8rem; color:var(--sub); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .snip mark { background:var(--star); color:#111; border-radius:3px; padding:0 2px; }
   .danger-zone { display:flex; gap:8px; flex-wrap:wrap; }
+  label.pick { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:.95rem; }
+  label.pick input { width:20px; height:20px; }
   .marks .t { font-variant-numeric:tabular-nums; color:var(--star); font-weight:700; }
 
   .md { overflow-wrap:anywhere; font-size:.95rem; }
@@ -260,10 +262,17 @@
   </div>
   <div class="card">
     <strong>削除</strong>
-    <p class="muted" style="margin:4px 0 10px" id="delNote"></p>
-    <div class="danger-zone">
-      <button class="btn sm" id="delAudio">録音ファイルだけ削除</button>
-      <button class="btn sm danger" id="delAll">この記録を削除</button>
+    <p class="muted" style="margin:4px 0 6px" id="delNote"></p>
+    <div id="delPick">
+      <p class="muted" style="margin:0 0 4px">削除するものを選んでください</p>
+      <label class="pick" id="pkAudio"><input type="checkbox" value="audio"> 録音ファイル</label>
+      <label class="pick" id="pkTx"><input type="checkbox" value="transcript"> 文字起こし</label>
+      <label class="pick" id="pkSum"><input type="checkbox" value="summary"> 要約</label>
+      <p id="delWarn" class="muted" style="margin:6px 0 0;color:var(--rec)"></p>
+    </div>
+    <div class="danger-zone" style="margin-top:10px">
+      <button class="btn sm" id="delSel" disabled>選んだものを削除</button>
+      <button class="btn sm danger" id="delAll">この記録をすべて削除</button>
     </div>
     <p class="muted" id="delAsk" style="margin:8px 0 0"></p>
   </div>
@@ -867,7 +876,7 @@ async function openJob(id) {
   $("dAudio").innerHTML = ""; $("dActions").innerHTML = "";
   $("dManual").classList.add("hidden"); $("mPaste").value = ""; $("mFallback").classList.add("hidden");
   $("dEdit").classList.add("hidden");
-  delArmed = null; $("delAsk").textContent = "";
+  delArmed = null; $("delAsk").textContent = ""; delHaveKey = "";
   manualPrompt = null;
   await pollJob();
 }
@@ -908,16 +917,26 @@ async function pollJob() {
       fetch(`${API}/jobs/${j.id}/prompt`).then(r => r.ok ? r.text() : null).then(t => { manualPrompt = t; });
     }
   }
-  $("dTx").textContent = j.transcript || "文字起こしはまだありません";
+  $("dTx").textContent = j.transcript || (j.transcript_deleted ? "文字起こしは削除済みです。" : "文字起こしはまだありません");
 
   const parts = j.audio_parts || [];
   if (!parts.length && j.audio_deleted) {
     $("dAudio").innerHTML = `<p class="muted" style="margin:8px 0 0">録音ファイルは削除済みです（要約と文字起こしは残っています）。</p>`;
   }
-  // 削除ボタン: 処理中は押せない。録音がないときは「録音だけ削除」を出さない
+  // 削除: 残っているものだけを選択肢に出す。処理中は押せない
   const busy = !FINAL.includes(j.status);
-  $("delAudio").classList.toggle("hidden", !parts.length);
-  $("delAudio").disabled = $("delAll").disabled = busy;
+  delHave = { audio: parts.length > 0, transcript: !!j.transcript, summary: !!j.summary };
+  const haveKey = JSON.stringify(delHave);
+  if (haveKey !== delHaveKey) {   // 中身が変わったときだけ選択をリセット（選んでいる途中で消さない）
+    delHaveKey = haveKey;
+    $("delPick").querySelectorAll("input").forEach(x => { x.checked = false; });
+  }
+  $("pkAudio").classList.toggle("hidden", !delHave.audio);
+  $("pkTx").classList.toggle("hidden", !delHave.transcript);
+  $("pkSum").classList.toggle("hidden", !delHave.summary);
+  $("delPick").classList.toggle("hidden", busy || !(delHave.audio || delHave.transcript || delHave.summary));
+  $("delAll").disabled = busy;
+  updateDelPick();
   $("delNote").textContent = busy ? "処理中は削除できません。"
     : (apiKeepDays > 0 && parts.length ? `録音ファイルは、録音から ${keepText(apiKeepDays)}たつと自動で削除されます（要約と文字起こしは残ります）。` : "");
   if (!$("dAudio").childElementCount && parts.length) {
@@ -928,7 +947,8 @@ async function pollJob() {
   if (j.summary) acts.push(`<button class="btn sm" id="aCopy">要約をコピー</button>`, `<button class="btn sm" id="aShare">共有</button>`);
   if (j.transcript && FINAL.includes(j.status) && apiAvailable)
     acts.push(`<button class="btn sm" id="aRetry">${j.summary ? "Claude API で要約し直す" : "Claude API で自動要約"}</button>`);
-  if (j.status === "error" && (j.audio_parts || []).length)
+  // 失敗したとき、または文字起こしを削除したあと（録音が残っていれば）作り直せる
+  if ((j.status === "error" || (!j.transcript && FINAL.includes(j.status))) && (j.audio_parts || []).length)
     acts.unshift(`<button class="btn sm primary" id="aRedo">やり直す（文字起こしから）</button>`);
   $("dActions").innerHTML = acts.join("");
   $("aRedo") && ($("aRedo").onclick = async () => {
@@ -964,16 +984,41 @@ function armDelete(kind, label) {
   delArmed = null; $("delAsk").textContent = ""; clearTimeout(delTimer);
   return true;
 }
-$("delAudio").onclick = async () => {
-  if (!armDelete("audio", "録音ファイルだけ削除")) return;
-  const r = await fetch(`${API}/jobs/${curJob}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio_only: true }) });
+// 選んだ組み合わせで、消したあとにできなくなることを案内する
+let delHave = {}, delHaveKey = "";
+const PART_NAMES = { audio: "録音ファイル", transcript: "文字起こし", summary: "要約" };
+const selectedParts = () => [...$("delPick").querySelectorAll("input:checked")].map(x => x.value).filter(v => delHave[v]);
+function updateDelPick() {
+  const sel = selectedParts();
+  $("delSel").disabled = !sel.length || $("delAll").disabled;
+  const left = Object.keys(PART_NAMES).filter(k => delHave[k] && !sel.includes(k));
+  const warn = [];
+  if (sel.length && !left.length) warn.push("すべて選んでいるので、記録ごと削除されます。");
+  else {
+    const txGone = sel.includes("transcript") || !delHave.transcript;
+    const audioGone = sel.includes("audio") || !delHave.audio;
+    if (sel.includes("transcript") && audioGone) warn.push("録音がないため、文字起こしは二度と作れなくなります。");
+    if (sel.includes("transcript") && !audioGone) warn.push("文字起こしは「やり直す」で録音から作り直せます（時間がかかります）。");
+    if (txGone && (sel.includes("summary") || !delHave.summary) && audioGone && sel.length) warn.push("要約も作り直せなくなります。");
+    else if (txGone && audioGone && delHave.summary && !sel.includes("summary") && sel.includes("transcript")) warn.push("今の要約は残りますが、要約の作り直しはできなくなります。");
+    if (sel.includes("audio") && !sel.includes("transcript") && delHave.transcript) warn.push("録音の再生と、文字起こしのやり直しができなくなります。");
+  }
+  $("delWarn").textContent = warn.join(" ");
+}
+$("delPick").onchange = () => { delArmed = null; $("delAsk").textContent = ""; updateDelPick(); };
+$("delSel").onclick = async () => {
+  const sel = selectedParts(); if (!sel.length) return;
+  if (!armDelete("sel:" + sel.join(","), `${sel.map(k => PART_NAMES[k]).join("・")}を削除`)) return;
+  const r = await fetch(`${API}/jobs/${curJob}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ parts: sel }) });
   if (!r.ok) return toast((await r.json().catch(() => ({}))).detail || "削除できませんでした");
-  $("dAudio").innerHTML = "";
-  toast("録音ファイルを削除しました。要約と文字起こしは残っています");
+  const res = await r.json();
+  if (res.deleted === "all") { toast("何も残らないため、記録ごと削除しました"); curJob = null; return showView("vList"); }
+  if (sel.includes("audio")) $("dAudio").innerHTML = "";
+  toast(`${sel.map(k => PART_NAMES[k]).join("・")}を削除しました`);
   pollJob();
 };
 $("delAll").onclick = async () => {
-  if (!armDelete("all", "この記録を削除")) return;
+  if (!armDelete("all", "この記録をすべて削除")) return;
   const r = await fetch(`${API}/jobs/${curJob}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
   if (!r.ok) return toast((await r.json().catch(() => ({}))).detail || "削除できませんでした");
   toast("記録を削除しました");
