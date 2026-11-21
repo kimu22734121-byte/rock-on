@@ -23,6 +23,34 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
 if MODEL not in MODELS:
     MODELS[MODEL] = {"label": MODEL, "note": "config.env で指定したモデル"}
 
+# 料金（米ドル / 100 万トークン）。記録ごとの料金表示に使う目安。
+# 2026 年 11 月時点の公式価格。変わったらここを直す。
+PRICES = {
+    "claude-opus-5-5": {"in": 4.00, "out": 20.00, "cache_read": 0.20},
+    "claude-sonnet-5-5": {"in": 2.00, "out": 10.00, "cache_read": 0.10},
+    "claude-haiku-5-5": {"in": 0.10, "out": 0.50, "cache_read": 0.01, "long_in": 0.50, "long_out": 2.50},
+    "claude-opus-5": {"in": 5.00, "out": 25.00, "cache_read": 0.50},
+    "claude-opus-4-8": {"in": 5.00, "out": 25.00, "cache_read": 0.50},
+    "claude-sonnet-5": {"in": 2.00, "out": 10.00, "cache_read": 0.20},
+}
+
+
+def estimate_cost(model: str, usage) -> dict:
+    """API の使用量（usage）から料金（米ドル）を計算する。"""
+    def n(name: str) -> int:
+        return int(getattr(usage, name, 0) or 0)
+
+    p = PRICES.get(model) or PRICES["claude-opus-5-5"]
+    inp, out = n("input_tokens"), n("output_tokens")
+    cache_w, cache_r = n("cache_creation_input_tokens"), n("cache_read_input_tokens")
+    prompt = inp + cache_w + cache_r
+    price_in, price_out = p["in"], p["out"]
+    if "long_in" in p and prompt > 100_000:  # Haiku は 10 万トークンを超えると高い料金
+        price_in, price_out = p["long_in"], p["long_out"]
+    usd = (inp * price_in + cache_w * price_in * 1.25 + cache_r * p["cache_read"] + out * price_out) / 1_000_000
+    return {"usd": round(usd, 6), "model": model, "input_tokens": prompt, "output_tokens": out}
+
+
 # 断られたときにサーバー側で別モデルに切り替える機能（Haiku では使えない）
 _FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
 
@@ -145,10 +173,13 @@ def manual_prompt(transcript: str, **kwargs) -> str:
     return f"{SYSTEM_PROMPT}\n\n{build_user_message(transcript, **kwargs)}"
 
 
-def summarize(transcript: str, model: str | None = None, **kwargs) -> str:
-    """Claude API で要約する。model は MODELS のどれか（省略時は MODEL）。kwargs は build_user_message と同じ。"""
+def summarize(transcript: str, model: str | None = None, **kwargs) -> tuple[str, dict]:
+    """Claude API で要約し、(要約, 料金の情報) を返す。
+
+    model は MODELS のどれか（省略時は MODEL）。kwargs は build_user_message と同じ。
+    """
     if not transcript.strip():
-        return "文字起こし結果が空でした。録音に音声が含まれているか確認してください。"
+        return "文字起こし結果が空でした。録音に音声が含まれているか確認してください。", {"usd": 0.0}
     model = model if model in MODELS else MODEL
 
     request = dict(
@@ -176,4 +207,5 @@ def summarize(transcript: str, model: str | None = None, **kwargs) -> str:
     text = "".join(b.text for b in message.content if b.type == "text").strip()
     if message.stop_reason == "max_tokens":
         text += "\n\n（※ 出力上限に達したため、要約が途中で切れています）"
-    return text
+    # 断られて別のモデルが続きを書いた場合も、実際に書いたモデル（message.model）の料金で計算する
+    return text, estimate_cost(getattr(message, "model", None) or model, message.usage)

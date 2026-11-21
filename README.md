@@ -124,6 +124,8 @@ uvicorn app.main:app --port 8000
 | Sonnet 5.5 | 約 15〜20 円 | 約半額。普段の会議なら十分な品質 |
 | Haiku 5.5 | 約 1 円 | とても安い。長い会議や込み入った話は粗くなりやすい |
 
+**記録ごとの料金**：記録を開くと「料金: 約 4 円」のように、その要約に実際にかかった金額（Claude から返ってきた使用量で計算）が出ます。要約し直した場合は「この要約 約 9 円（この記録の合計 約 13 円）」、claude.ai で作った要約は「無料（claude.ai）」と出ます。記録の一覧の上には、今月・先月・これまでの API 料金の合計が出ます。円への換算は 1 ドル = 150 円（`config.env` の `USD_JPY` で変更可）で、実際の請求額は platform.claude.com の Usage で確認できます。
+
 料金は録音の長さに比例しません（要約を書く分が毎回かかるため）。3 分ほどの短い録音でも、1 回あたり Opus で数円、Sonnet でその半分ほどです。
 
 **手動の流れ**：録音後、記録の画面に「claude.ai で要約する」が出ます。
@@ -230,6 +232,7 @@ tailscale serve --bg 8000
 | `WHISPER_DEVICE` | `cpu` | `cpu` / `cuda` / `auto`（GPU を使うには CUDA と cuDNN のインストールが必要） |
 | `WHISPER_COMPUTE_TYPE` | CPU は `int8`、GPU は `default` | GPU なら `float16` など |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | 画面でモデルを選ばなかったときに使う Claude モデル |
+| `USD_JPY` | `150` | 料金を円で表示するときの、1 ドルあたりの円 |
 | `STORAGE_DIR` | `D:\Server\rock-on`（D ドライブがない PC は `rock-on\data`） | 録音・要約・文字起こしモデルの保存先 |
 | `AUDIO_KEEP_DAYS` | `0`（期限なし） | 録音ファイルを残す日数。過ぎたら録音だけ自動削除（要約・文字起こしは残す） |
 | `ALLOWED_ORIGINS` | `https://kimu22734121-byte.github.io` | 録音アプリを置いたサイト（GitHub Pages）。カンマ区切りで複数可 |

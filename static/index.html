@@ -52,6 +52,7 @@
   <h1>録音まとめ</h1>
   <p class="muted">📱 スマホ用の録音アプリは <a href="/rec/">/rec/</a> にあります（スマホのブラウザで開いてホーム画面に追加）。</p>
   <p class="muted" id="storageInfo"></p>
+  <p class="muted" id="costInfo"></p>
 
   <section class="card">
     <div class="grid">
@@ -182,6 +183,30 @@
 const $ = (id) => document.getElementById(id);
 const STATUS = { queued:"順番待ち", transcribing:"文字起こし中", transcribed:"要約待ち", summarizing:"要約中", done:"完了", error:"エラー" };
 const FINAL = ["done", "error", "transcribed"];
+let usdJpy = 150;
+// 料金（米ドル）を円で読みやすく
+function yen(usd) {
+  const v = (usd || 0) * usdJpy;
+  if (v === 0) return "0 円";
+  if (v < 0.1) return "0.1 円未満";
+  if (v < 1) return `約 ${v.toFixed(1)} 円`;
+  return `約 ${Math.round(v).toLocaleString()} 円`;
+}
+function costText(j, long) {
+  const total = Number(j.total_cost_usd || 0);
+  if (j.summary_model === "claude.ai") return total ? `無料（claude.ai）・API ${yen(total)}` : "無料（claude.ai）";
+  if (!total) return "";
+  const last = j.summary_cost && j.summary_cost.usd;
+  if (long && last && total - last > 1e-6) return `この要約 ${yen(last)}（この記録の合計 ${yen(total)}）`;
+  return yen(total);
+}
+async function loadCosts() {
+  try {
+    const c = await (await fetch("/api/costs")).json();
+    $("costInfo").textContent = c.records
+      ? `💴 API 料金の合計：今月 ${yen(c.usd.this_month)}・先月 ${yen(c.usd.last_month)}・これまで ${yen(c.usd.all)}（手動の要約は無料）` : "";
+  } catch {}
+}
 $("kind").onchange = () => { $("instrField").hidden = $("kind").value !== "other"; };
 
 // 要約の方法（auto / manual）。API キーがなければ manual のみ。
@@ -209,6 +234,7 @@ $("mode") && ($("mode").onchange = () => { try { localStorage.setItem("summaryMo
     let saved = ""; try { saved = localStorage.getItem("model") || ""; } catch {}
     $("model").value = (c.models || []).some(m => m.id === saved) ? saved : (c.default_model || "");
     if (c.storage) $("storageInfo").textContent = `💾 保存先: ${c.storage}`;
+    usdJpy = c.usd_jpy || 150;
   } catch {}
   renderMode();
 })();
@@ -349,7 +375,9 @@ function showJob(job) {
   $("jobStatus").innerHTML = `<span class="${cls}"></span>`;
   const msg = job.message && job.message !== STATUS[job.status] ? job.message : "";
   const opt = job.summary_model && [...$("model").options].find(o => o.value === job.summary_model);
-  const by = job.summary && job.summary_model ? `（要約: ${opt ? opt.dataset.label : job.summary_model === "claude.ai" ? "claude.ai" : job.summary_model}）` : "";
+  const cost = job.summary ? costText(job, true) : "";
+  const by = job.summary && job.summary_model
+    ? `（要約: ${opt ? opt.dataset.label : job.summary_model === "claude.ai" ? "claude.ai" : job.summary_model}${cost ? " ・ 料金: " + cost : ""}）` : "";
   $("jobStatus").firstChild.textContent = `${STATUS[job.status] || ""} ${msg}${by}` +
     (job.status === "transcribing" ? ` ${Math.round((job.progress || 0) * 100)}%` : "");
   $("jobProgress").value = job.status === "done" ? 1 : job.status === "summarizing" ? 0.95 : (job.progress || 0) * 0.9;
@@ -445,6 +473,7 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
 // ---------- 履歴 ----------
 let listSeq = 0;
 async function loadList() {
+  loadCosts();
   const q = $("q").value.trim();
   const seq = ++listSeq;
   const jobs = await (await fetch("/api/jobs" + (q ? "?q=" + encodeURIComponent(q) : ""))).json();
@@ -457,7 +486,7 @@ async function loadList() {
     name.textContent = `${{ meeting: "🗣", lecture: "📚", conversation: "💬" }[j.kind] || "📝"} ${j.title || "（無題）"}`;
     const meta = document.createElement("span");
     meta.className = "muted";
-    meta.textContent = `${(j.created_at || "").replace("T", " ")}  ${STATUS[j.status] || ""}`;
+    meta.textContent = `${(j.created_at || "").replace("T", " ")}  ${STATUS[j.status] || ""}${costText(j) ? "  " + costText(j) : ""}`;
     li.append(name, meta);
     if (j.snippet) {   // 検索語が出てきた場所の抜粋
       const snip = document.createElement("div");

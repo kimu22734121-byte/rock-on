@@ -42,7 +42,14 @@ def _read(d: Path, name: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
-def write_view(d: Path, meta: dict) -> None:
+def _yen(usd: float, rate: float) -> str:
+    v = usd * rate
+    if v < 0.1:
+        return "0.1 円未満"
+    return f"約 {v:.1f} 円" if v < 1 else f"約 {round(v):,} 円"
+
+
+def write_view(d: Path, meta: dict, usd_jpy: float = 150.0) -> None:
     title = meta.get("title") or "（無題）"
     summary = _read(d, "summary.md")
     transcript = _read(d, "transcript.txt")
@@ -56,6 +63,11 @@ def write_view(d: Path, meta: dict) -> None:
         info.append(_fmt(meta["duration"]))
     if summary and meta.get("summary_model"):
         info.append("要約: " + MODEL_LABELS.get(meta["summary_model"], meta["summary_model"]))
+    total = float(meta.get("total_cost_usd") or 0)
+    if summary and meta.get("summary_model") == "claude.ai":
+        info.append("料金: 無料（claude.ai）" + (f"・API {_yen(total, usd_jpy)}" if total else ""))
+    elif total:
+        info.append("料金: " + _yen(total, usd_jpy))
 
     if summary:
         # 要約の中の HTML はそのまま表示しない（文字として出す）

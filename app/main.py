@@ -144,7 +144,7 @@ def _refresh_view(d: Path) -> None:
     """記録フォルダの「要約.html」を、今の内容で作り直す（失敗しても処理は止めない）。"""
     try:
         if d.is_dir() and (d / "meta.json").exists():
-            write_view(d, _read_meta(d))
+            write_view(d, _read_meta(d), USD_JPY)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
 
@@ -174,9 +174,11 @@ def _summarize_job(d: Path, transcript: str) -> None:
         return
     _write_meta(d, status="summarizing", message=f"Claude（{MODELS.get(meta.get('model') or DEFAULT_MODEL, {}).get('label', '')}）で要約中…", progress=1.0)
     model = meta.get("model") if meta.get("model") in MODELS else DEFAULT_MODEL
-    summary = summarize(transcript, model=model, **_summary_kwargs(meta))
+    summary, cost = summarize(transcript, model=model, **_summary_kwargs(meta))
     (d / "summary.md").write_text(summary, encoding="utf-8")
-    _write_meta(d, status="done", message="完了", summary_model=model)
+    # この要約の料金と、この記録で使った API 料金の累計（要約し直した分も含む）
+    total = round(float(_read_meta(d).get("total_cost_usd") or 0) + cost.get("usd", 0), 6)
+    _write_meta(d, status="done", message="完了", summary_model=model, summary_cost=cost, total_cost_usd=total)
     _refresh_view(d)
 
 
@@ -336,7 +338,7 @@ def list_jobs(q: str = ""):
         m = _read_meta(d)
         if m.get("status") == "uploading":
             continue
-        item = {k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration", "summary_mode")}
+        item = {k: m.get(k) for k in ("id", "title", "kind", "created_at", "status", "duration", "summary_mode", "summary_model", "total_cost_usd")}
         if terms:
             title, summary, transcript = m.get("title") or "", _read_text(d, "summary.md"), _read_text(d, "transcript.txt")
             haystack = f"{title}\n{m.get('notes') or ''}\n{summary}\n{transcript}".lower()
@@ -360,6 +362,43 @@ def get_job(job_id: str):
     return meta
 
 
+# 料金を円で表示するときのレート（config.env の USD_JPY で変えられる）
+try:
+    USD_JPY = float(os.getenv("USD_JPY", "150"))
+except ValueError:
+    USD_JPY = 150.0
+
+
+@app.get("/api/costs")
+def get_costs():
+    """API 料金の合計（今月・先月・これまで）。削除した記録の分は含まない。"""
+    now = datetime.now()
+    this_month = now.strftime("%Y-%m")
+    last_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    totals = {"this_month": 0.0, "last_month": 0.0, "all": 0.0}
+    count = 0
+    for d in DATA_DIR.iterdir():
+        if not (d / "meta.json").exists():
+            continue
+        m = _read_meta(d)
+        usd = float(m.get("total_cost_usd") or 0)
+        if not usd:
+            continue
+        count += 1
+        month = (m.get("created_at") or "")[:7]
+        totals["all"] += usd
+        if month == this_month:
+            totals["this_month"] += usd
+        elif month == last_month:
+            totals["last_month"] += usd
+    return {
+        "usd": {k: round(v, 4) for k, v in totals.items()},
+        "jpy": {k: round(v * USD_JPY, 1) for k, v in totals.items()},
+        "usd_jpy": USD_JPY,
+        "records": count,
+    }
+
+
 @app.get("/api/config")
 def get_config():
     """画面側で「自動要約」を選べるか、録音ファイルを何日残すかなどの情報。"""
@@ -368,6 +407,7 @@ def get_config():
         "audio_keep_days": AUDIO_KEEP_DAYS,
         "server_name": SERVER_NAME,
         "models": [{"id": k, **v} for k, v in MODELS.items()],
+        "usd_jpy": USD_JPY,
         "default_model": DEFAULT_MODEL,
         "storage": str(STORAGE_DIR or DATA_DIR),
     }
@@ -582,7 +622,8 @@ def save_manual_summary(job_id: str, summary: str = Body(..., embed=True)):
     if not summary:
         raise HTTPException(400, "要約が空です")
     (d / "summary.md").write_text(summary + "\n", encoding="utf-8")
-    _write_meta(d, status="done", message="完了", summary_mode="manual", summary_model="claude.ai")
+    _write_meta(d, status="done", message="完了", summary_mode="manual", summary_model="claude.ai",
+                summary_cost={"usd": 0.0, "manual": True})
     _refresh_view(d)
     return {"ok": True}
 

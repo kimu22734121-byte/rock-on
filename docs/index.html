@@ -199,6 +199,7 @@
     <div class="field">
       <input type="search" id="q" placeholder="🔍 キーワードで探す（タイトル・要約・文字起こし）" autocomplete="off">
     </div>
+    <p class="muted hidden" id="costInfo" style="margin:6px 0 0"></p>
     <p class="muted hidden" id="qInfo" style="margin:6px 0 0"></p>
     <ul class="list" id="jobList"></ul>
   </div>
@@ -429,7 +430,24 @@ let mode = (() => { try { return localStorage.getItem("summaryMode") || "auto"; 
 // 選んだ方法は保存しておき、API キーがないときだけ一時的に手動にする
 const effectiveMode = () => apiAvailable ? mode : "manual";
 // 自動要約に使うモデル（サーバーから選択肢をもらう）
-let models = [], defaultModel = "";
+let models = [], defaultModel = "", usdJpy = 150;
+// 料金（米ドル）を円で読みやすく: 0.002 → 「0.3 円」、0.03 → 「約 5 円」
+function yen(usd) {
+  const v = (usd || 0) * usdJpy;
+  if (v === 0) return "0 円";
+  if (v < 0.1) return "0.1 円未満";
+  if (v < 1) return `約 ${v.toFixed(1)} 円`;
+  return `約 ${Math.round(v).toLocaleString()} 円`;
+}
+// 記録の料金の表示: 手動なら「無料」、自動なら金額
+function costText(j, long) {
+  const total = Number(j.total_cost_usd || 0);
+  if (j.summary_model === "claude.ai") return total ? `無料（claude.ai）・API ${yen(total)}` : "無料（claude.ai）";
+  if (!total) return "";
+  const last = j.summary_cost && j.summary_cost.usd;
+  if (long && last && total - last > 1e-6) return `この要約 ${yen(last)}（この記録の合計 ${yen(total)}）`;
+  return yen(total);
+}
 let model = (() => { try { return localStorage.getItem("model") || ""; } catch { return ""; } })();
 const modelLabel = (id) => (models.find(m => m.id === id) || {}).label || (id === "claude.ai" ? "claude.ai（手動）" : id || "");
 const currentModel = () => models.some(m => m.id === model) ? model : (defaultModel || (models[0] || {}).id || "");
@@ -473,6 +491,7 @@ async function loadConfig() {
       const c = await r.json();
       apiAvailable = !!c.api_available; apiKeepDays = c.audio_keep_days || 0;
       models = c.models || []; defaultModel = c.default_model || "";
+      usdJpy = c.usd_jpy || 150;
       ok = true;
     }
   } catch {}
@@ -878,6 +897,11 @@ async function refreshList() {
   const seq = ++listSeq;
   try {
     const jobs = await (await fetch(`${API}/jobs${q ? "?q=" + encodeURIComponent(q) : ""}`)).json();
+    fetch(`${API}/costs`).then(r => r.ok ? r.json() : null).then(c => {
+      if (!c) return;
+      $("costInfo").classList.toggle("hidden", !c.records);
+      $("costInfo").textContent = `💴 API 料金の合計：今月 ${yen(c.usd.this_month)}・先月 ${yen(c.usd.last_month)}・これまで ${yen(c.usd.all)}（手動の要約は無料）`;
+    }).catch(() => {});
     if (seq !== listSeq) return;   // 入力中に古い結果で上書きしない
     $("qInfo").classList.toggle("hidden", !q);
     $("qInfo").textContent = q ? `「${q}」を含む記録：${jobs.length} 件` : "";
@@ -885,7 +909,7 @@ async function refreshList() {
       const cls = pillClass(j.status);
       return `<li data-id="${j.id}" style="cursor:pointer"><div class="grow">
         <div class="title">${kindIcon(j.kind)} ${q ? highlight(j.title || "（無題）", q) : esc(j.title || "（無題）")}</div>
-        <div class="muted">${esc((j.created_at || "").replace("T", " ").slice(0, 16))}${j.duration ? " ・ " + fmt(j.duration) : ""}</div>
+        <div class="muted">${esc((j.created_at || "").replace("T", " ").slice(0, 16))}${j.duration ? " ・ " + fmt(j.duration) : ""}${costText(j) ? " ・ " + esc(costText(j)) : ""}</div>
         ${j.snippet ? `<div class="snip">${highlight(j.snippet, q)}</div>` : ""}
         </div><span class="pill ${cls}">${STATUS[j.status] || j.status}</span></li>`;
     }).join("") : `<li class="muted">${q ? "見つかりませんでした" : "まだありません"}</li>`;
@@ -922,7 +946,8 @@ async function pollJob() {
   $("dStatus").className = "pill " + pillClass(j.status);
   $("dStatus").textContent = (STATUS[j.status] || j.status) + (j.status === "transcribing" ? ` ${Math.round((j.progress || 0) * 100)}%` : "");
   $("dMeta").textContent = `${(j.created_at || "").replace("T", " ").slice(0, 16)}${j.duration ? " ・ " + fmt(j.duration) : ""}`
-    + (j.summary && j.summary_model ? ` ・ 要約: ${modelLabel(j.summary_model)}` : "");
+    + (j.summary && j.summary_model ? ` ・ 要約: ${modelLabel(j.summary_model)}` : "")
+    + (costText(j, true) ? ` ・ 料金: ${costText(j, true)}` : "");
   $("dProg").classList.toggle("hidden", FINAL.includes(j.status));
   $("dProg").value = j.status === "summarizing" ? 0.95 : (j.progress || 0) * 0.9;
   $("dErr").classList.toggle("hidden", j.status !== "error");
