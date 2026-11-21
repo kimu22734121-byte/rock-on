@@ -14,9 +14,9 @@ import anthropic
 
 # 自動要約で選べるモデル。画面の選択肢と同じ。
 MODELS = {
-    "claude-opus-5-5": {"label": "Opus 5.5", "note": "いちばん丁寧（3 分で約 5〜10 円）"},
-    "claude-sonnet-5-5": {"label": "Sonnet 5.5", "note": "標準・約半額（3 分で約 2〜5 円）"},
-    "claude-haiku-5-5": {"label": "Haiku 5.5", "note": "とても安い・簡潔（3 分で 1 円未満）"},
+    "claude-opus-5-5": {"label": "Opus 5.5", "note": "いちばん丁寧（1 時間の会議で約 30〜40 円）"},
+    "claude-sonnet-5-5": {"label": "Sonnet 5.5", "note": "標準・約半額（1 時間の会議で約 15〜20 円）"},
+    "claude-haiku-5-5": {"label": "Haiku 5.5", "note": "とても安い・簡潔（1 時間の会議で約 1 円）"},
 }
 # 画面で選ばなかったときに使うモデル（config.env の CLAUDE_MODEL で変えられる）
 MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
