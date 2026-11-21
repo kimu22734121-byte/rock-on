@@ -81,6 +81,10 @@
       </select>
       <p class="muted" id="modeHint" style="margin:4px 0 0"></p>
     </div>
+    <div style="margin-top:12px" id="modelField" hidden>
+      <label for="model">要約に使うモデル（自動のとき）</label>
+      <select id="model"></select>
+    </div>
     <div style="margin-top:12px">
       <label for="notes">補足（任意：参加者名・専門用語など。認識精度が上がります）</label>
       <textarea id="notes" placeholder="例: 参加者 田中・鈴木・佐藤 / 用語: Kubernetes, SLA"></textarea>
@@ -188,15 +192,22 @@ function renderMode() {
   if (!apiAvailable) $("mode").value = "manual";
   $("modeHint").textContent = !apiAvailable
     ? "サーバーに API キーが設定されていないため、手動（claude.ai に貼り付け）で要約します。"
-    : $("mode").value === "auto" ? "録音後、自動で要約します（1 時間で約 40 円）。" : "文字起こしまで自動で行い、要約は claude.ai で作ります。";
-  $("btnRetry").textContent = "Claude API で要約";
+    : $("mode").value === "auto" ? "録音後、自動で要約します（Claude API の料金がかかります）。" : "文字起こしまで自動で行い、要約は claude.ai で作ります。";
+  $("modelField").hidden = $("mode").value !== "auto" || !$("model").options.length;
+  const m = $("model").selectedOptions[0];
+  $("btnRetry").textContent = `${m ? m.dataset.label : "Claude API"} で要約`;
 }
+$("model").onchange = () => { try { localStorage.setItem("model", $("model").value); } catch {} renderMode(); };
 $("mode") && ($("mode").onchange = () => { try { localStorage.setItem("summaryMode", $("mode").value); } catch {} renderMode(); });
 (async () => {
   try { $("mode").value = localStorage.getItem("summaryMode") || "auto"; } catch {}
   try {
     const c = await (await fetch("/api/config")).json();
     apiAvailable = !!c.api_available;
+    $("model").innerHTML = (c.models || []).map(m =>
+      `<option value="${m.id}" data-label="${m.label}">${m.label}　${m.note}</option>`).join("");
+    let saved = ""; try { saved = localStorage.getItem("model") || ""; } catch {}
+    $("model").value = (c.models || []).some(m => m.id === saved) ? saved : (c.default_model || "");
     if (c.storage) $("storageInfo").textContent = `💾 保存先: ${c.storage}`;
   } catch {}
   renderMode();
@@ -288,6 +299,7 @@ async function submit(files, perFile = false) {
   fd.append("notes", $("notes").value);
   fd.append("instructions", $("kind").value === "other" ? $("instr").value.trim() : "");
   fd.append("summary_mode", $("mode").value);
+  fd.append("model", $("model").value);
   showJob({ title, status: "queued", message: "アップロード中…", progress: 0 });
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
@@ -336,7 +348,9 @@ function showJob(job) {
   const cls = job.status === "error" ? "error" : "";
   $("jobStatus").innerHTML = `<span class="${cls}"></span>`;
   const msg = job.message && job.message !== STATUS[job.status] ? job.message : "";
-  $("jobStatus").firstChild.textContent = `${STATUS[job.status] || ""} ${msg}` +
+  const opt = job.summary_model && [...$("model").options].find(o => o.value === job.summary_model);
+  const by = job.summary && job.summary_model ? `（要約: ${opt ? opt.dataset.label : job.summary_model === "claude.ai" ? "claude.ai" : job.summary_model}）` : "";
+  $("jobStatus").firstChild.textContent = `${STATUS[job.status] || ""} ${msg}${by}` +
     (job.status === "transcribing" ? ` ${Math.round((job.progress || 0) * 100)}%` : "");
   $("jobProgress").value = job.status === "done" ? 1 : job.status === "summarizing" ? 0.95 : (job.progress || 0) * 0.9;
   $("jobProgress").hidden = FINAL.includes(job.status);
@@ -399,7 +413,10 @@ $("btnRedo").onclick = async () => {
   openJob(currentId);
 };
 $("btnRetry").onclick = async () => {
-  const r = await fetch(`/api/jobs/${currentId}/resummarize`, { method: "POST" });
+  // 上の「要約に使うモデル」で選んでいるモデルで要約し直す
+  const r = await fetch(`/api/jobs/${currentId}/resummarize`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: $("model").value }),
+  });
   if (!r.ok) return alert((await r.json()).detail || "失敗しました");
   openJob(currentId);
 };

@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from .summarize import KINDS, api_available, manual_prompt, summarize
+from .summarize import KINDS, MODEL as DEFAULT_MODEL, MODELS, api_available, manual_prompt, summarize
 from .transcribe import transcribe
 
 from .storage import DATA_DIR, ROOT, SERVER_NAME, STORAGE_DIR, prepare as _prepare_storage
@@ -143,10 +143,11 @@ def _summarize_job(d: Path, transcript: str) -> None:
     if meta.get("summary_mode") == "manual":
         _write_meta(d, status="transcribed", message="文字起こし完了。claude.ai に貼り付けて要約してください", progress=1.0)
         return
-    _write_meta(d, status="summarizing", message="Claude で要約中…", progress=1.0)
-    summary = summarize(transcript, **_summary_kwargs(meta))
+    _write_meta(d, status="summarizing", message=f"Claude（{MODELS.get(meta.get('model') or DEFAULT_MODEL, {}).get('label', '')}）で要約中…", progress=1.0)
+    model = meta.get("model") if meta.get("model") in MODELS else DEFAULT_MODEL
+    summary = summarize(transcript, model=model, **_summary_kwargs(meta))
     (d / "summary.md").write_text(summary, encoding="utf-8")
-    _write_meta(d, status="done", message="完了")
+    _write_meta(d, status="done", message="完了", summary_model=model)
 
 
 def _process(d: Path, parts: list[Path] | None) -> None:
@@ -222,6 +223,7 @@ async def create_job(
     marks: str = Form("[]"),
     client_id: str = Form(""),
     summary_mode: str = Form("auto"),
+    model: str = Form(""),
 ):
     """録音を受け付ける。audio は複数可（録音が中断・再開された場合のパート）。
 
@@ -260,6 +262,7 @@ async def create_job(
         marks=_parse_marks(marks),
         # API キーがなければ自動要約はできないので手動にする
         summary_mode="auto" if summary_mode == "auto" and api_available() else "manual",
+        model=model if model in MODELS else DEFAULT_MODEL,
         audio_parts=[p.name for p in parts],
         status="queued",
         message="受け付けました",
@@ -326,6 +329,8 @@ def get_config():
         "api_available": api_available(),
         "audio_keep_days": AUDIO_KEEP_DAYS,
         "server_name": SERVER_NAME,
+        "models": [{"id": k, **v} for k, v in MODELS.items()],
+        "default_model": DEFAULT_MODEL,
         "storage": str(STORAGE_DIR or DATA_DIR),
     }
 
@@ -482,14 +487,17 @@ def retry_job(job_id: str):
 
 
 @app.post("/api/jobs/{job_id}/resummarize")
-def resummarize(job_id: str):
+def resummarize(job_id: str, model: str | None = Body(None, embed=True)):
     """文字起こしは再利用して、Claude API で要約する（やり直し・手動から自動への切り替え）。"""
     d = _job_dir(job_id)
     if not (d / "transcript.txt").exists():
         raise HTTPException(400, "文字起こしがまだありません")
     if not api_available():
         raise HTTPException(400, "API キーが設定されていないため自動要約は使えません")
-    _write_meta(d, summary_mode="auto")
+    updates = {"summary_mode": "auto"}
+    if model in MODELS:
+        updates["model"] = model   # 要約し直すときに選んだモデル
+    _write_meta(d, **updates)
     threading.Thread(target=_process, args=(d, None), daemon=True).start()
     return {"ok": True}
 
@@ -512,7 +520,7 @@ def save_manual_summary(job_id: str, summary: str = Body(..., embed=True)):
     if not summary:
         raise HTTPException(400, "要約が空です")
     (d / "summary.md").write_text(summary + "\n", encoding="utf-8")
-    _write_meta(d, status="done", message="完了", summary_mode="manual")
+    _write_meta(d, status="done", message="完了", summary_mode="manual", summary_model="claude.ai")
     return {"ok": True}
 
 

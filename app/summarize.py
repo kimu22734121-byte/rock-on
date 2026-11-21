@@ -12,7 +12,19 @@ import os
 
 import anthropic
 
+# 自動要約で選べるモデル。画面の選択肢と同じ。
+MODELS = {
+    "claude-opus-5-5": {"label": "Opus 5.5", "note": "いちばん丁寧（3 分で約 5〜10 円）"},
+    "claude-sonnet-5-5": {"label": "Sonnet 5.5", "note": "標準・約半額（3 分で約 2〜5 円）"},
+    "claude-haiku-5-5": {"label": "Haiku 5.5", "note": "とても安い・簡潔（3 分で 1 円未満）"},
+}
+# 画面で選ばなかったときに使うモデル（config.env の CLAUDE_MODEL で変えられる）
 MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
+if MODEL not in MODELS:
+    MODELS[MODEL] = {"label": MODEL, "note": "config.env で指定したモデル"}
+
+# 断られたときにサーバー側で別モデルに切り替える機能（Haiku では使えない）
+_FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
 
 _client: anthropic.Anthropic | None = None
 
@@ -133,28 +145,30 @@ def manual_prompt(transcript: str, **kwargs) -> str:
     return f"{SYSTEM_PROMPT}\n\n{build_user_message(transcript, **kwargs)}"
 
 
-def summarize(transcript: str, **kwargs) -> str:
-    """Claude API で要約する。kwargs は build_user_message と同じ。"""
+def summarize(transcript: str, model: str | None = None, **kwargs) -> str:
+    """Claude API で要約する。model は MODELS のどれか（省略時は MODEL）。kwargs は build_user_message と同じ。"""
     if not transcript.strip():
         return "文字起こし結果が空でした。録音に音声が含まれているか確認してください。"
+    model = model if model in MODELS else MODEL
 
-    with _get_client().beta.messages.stream(
-        model=MODEL,
+    request = dict(
+        model=model,
         max_tokens=64000,
         system=SYSTEM_PROMPT,
         thinking={"type": "adaptive"},
         output_config={"effort": "medium"},
+        messages=[{"role": "user", "content": build_user_message(transcript, **kwargs)}],
+    )
+    client = _get_client()
+    if model in _FALLBACK_MODELS:
         # 安全分類器が誤って拒否した場合、サーバー側で別モデルに切り替えて続行する
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        messages=[
-            {
-                "role": "user",
-                "content": build_user_message(transcript, **kwargs),
-            }
-        ],
-    ) as stream:
-        message = stream.get_final_message()
+        stream = client.beta.messages.stream(
+            **request, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
+        )
+    else:
+        stream = client.messages.stream(**request)
+    with stream as s:
+        message = s.get_final_message()
 
     if message.stop_reason == "refusal":
         raise RuntimeError("Claude がこの内容の要約を辞退しました。")

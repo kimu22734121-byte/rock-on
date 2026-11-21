@@ -116,6 +116,14 @@ uvicorn app.main:app --port 8000
 | 手間 | 録音を止めるだけ | コピー → claude.ai に貼り付け → 回答を貼り戻す |
 | 必要なもの | Claude API キー | claude.ai のアカウント |
 
+**自動のときのモデル**：「要約に使うモデル」で選べます（選んだものは次回も残ります）。記録を開くと、どのモデルで要約したかが表示され、別のモデルを選んで要約し直すこともできます。
+
+| モデル | 3 分の録音 1 回 | 特徴 |
+|---|---|---|
+| Opus 5.5（標準） | 約 5〜10 円 | いちばん丁寧。誤認識の補正や決定事項の拾い方がうまい |
+| Sonnet 5.5 | 約 2〜5 円 | 約半額。普段の会議なら十分な品質 |
+| Haiku 5.5 | 1 円未満 | とても安い。長い会議や込み入った話は粗くなりやすい |
+
 **手動の流れ**：録音後、記録の画面に「claude.ai で要約する」が出ます。
 ① 「指示と文字起こしをコピー」→ ② 「claude.ai を開く」で新しいチャットに貼り付けて送信 → ③ Claude の回答をコピーして貼り付け、「要約として保存」。
 
@@ -216,7 +224,7 @@ tailscale serve --bg 8000
 | `WHISPER_MODEL` | `medium` | `small`（軽い）/ `medium` / `large-v3`（高精度、GPU 推奨） |
 | `WHISPER_DEVICE` | `cpu` | `cpu` / `cuda` / `auto`（GPU を使うには CUDA と cuDNN のインストールが必要） |
 | `WHISPER_COMPUTE_TYPE` | CPU は `int8`、GPU は `default` | GPU なら `float16` など |
-| `CLAUDE_MODEL` | `claude-opus-5-5` | 要約に使う Claude モデル |
+| `CLAUDE_MODEL` | `claude-opus-5-5` | 画面でモデルを選ばなかったときに使う Claude モデル |
 | `STORAGE_DIR` | `D:\Server\rock-on`（D ドライブがない PC は `rock-on\data`） | 録音・要約・文字起こしモデルの保存先 |
 | `AUDIO_KEEP_DAYS` | `0`（期限なし） | 録音ファイルを残す日数。過ぎたら録音だけ自動削除（要約・文字起こしは残す） |
 | `ALLOWED_ORIGINS` | `https://kimu22734121-byte.github.io` | 録音アプリを置いたサイト（GitHub Pages）。カンマ区切りで複数可 |
